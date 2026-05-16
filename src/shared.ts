@@ -37,6 +37,8 @@ export interface DownloadItem {
   FileName: string;
   FileLink: string;
   FileSize: string;
+  /** Lowercase hex SHA-256 of the package, from DisplayCatalog when available. */
+  Sha256?: string | null;
 }
 
 export interface ResolveAllResponse {
@@ -74,6 +76,7 @@ export interface NormalizedItem {
   type: PackageType;
   arch?: "x64" | "arm64" | "x86" | "neutral";
   version?: string;
+  sha256?: string;
 }
 
 export interface IdTypeMeta {

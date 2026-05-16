@@ -8,6 +8,11 @@ import {
   Checkbox,
   CounterBadge,
   Input,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   Tab,
   TabList,
   Table,
@@ -30,11 +35,36 @@ import {
   DocumentRegular,
   FilterRegular,
   OpenRegular,
+  WindowConsoleRegular,
 } from "@fluentui/react-icons";
 import { formatBytes, type NormalizedItem, type PackageType } from "../shared";
 
 type FilterKey = "all" | PackageType;
 type SortKey = "name" | "size" | "type" | "arch";
+
+type Shell = "powershell" | "cmd" | "bash";
+
+function buildVerifyCommand(shell: Shell, file: string, hash: string): string {
+  switch (shell) {
+    case "powershell": {
+      // Single-quoted PS strings escape an embedded quote by doubling it.
+      const f = file.replace(/'/g, "''");
+      return `if ((Get-FileHash -Algorithm SHA256 '${f}').Hash -ieq '${hash}') { 'OK' } else { 'MISMATCH' }`;
+    }
+    case "cmd": {
+      // CMD has no general escape for `"` inside quoted args; doubling works
+      // for most consumers and is the convention certutil accepts.
+      const f = file.replace(/"/g, '""');
+      return `certutil -hashfile "${f}" SHA256 | find /i "${hash}" >NUL && echo OK || echo MISMATCH`;
+    }
+    case "bash": {
+      // sha256sum -c expects "<hash><space><space><file>"; close the single
+      // quote, insert an escaped literal, and re-open for any `'` in the name.
+      const f = file.replace(/'/g, "'\\''");
+      return `echo '${hash}  ${f}' | sha256sum -c -`;
+    }
+  }
+}
 
 interface ResultsViewProps {
   results: NormalizedItem[];
@@ -123,6 +153,45 @@ const useStyles = makeStyles({
     whiteSpace: "nowrap",
     display: "inline-block",
     maxWidth: "100%",
+  },
+  nameStack: { display: "flex", flexDirection: "column", minWidth: 0 },
+  hashLine: {
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "6px",
+    marginTop: "2px",
+    alignSelf: "flex-start",
+  },
+  hashRow: {
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "4px",
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+    cursor: "pointer",
+    border: "none",
+    background: "transparent",
+    padding: 0,
+    fontFamily: "inherit",
+    "&:hover": { color: tokens.colorNeutralForeground2 },
+  },
+  hashLabel: { color: tokens.colorNeutralForeground4 },
+  verifyBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "18px",
+    height: "18px",
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusSmall,
+    backgroundColor: "transparent",
+    color: tokens.colorNeutralForeground3,
+    cursor: "pointer",
+    padding: 0,
+    "&:hover": {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+      color: tokens.colorNeutralForeground2,
+    },
   },
   numCell: {
     textAlign: "right",
@@ -449,9 +518,74 @@ function ResultRow({
             <DocumentRegular fontSize={16} style={{ color: tokens.colorNeutralForeground3 }} />
           }
         >
-          <Text className={`qsl-mono ${styles.nameText}`} title={item.name}>
-            {item.name}
-          </Text>
+          <div className={styles.nameStack}>
+            <Text className={`qsl-mono ${styles.nameText}`} title={item.name}>
+              {item.name}
+            </Text>
+            {item.sha256 && (
+              <div className={styles.hashLine}>
+                <Tooltip content={`Click to copy · ${item.sha256}`} relationship="label">
+                  <button
+                    type="button"
+                    className={`qsl-mono ${styles.hashRow}`}
+                    onClick={() => onCopy(item.sha256!, "SHA-256")}
+                    aria-label="Copy SHA-256"
+                  >
+                    <span className={styles.hashLabel}>SHA-256</span>
+                    <span>{item.sha256.slice(0, 16)}…</span>
+                    <CopyRegular fontSize={11} />
+                  </button>
+                </Tooltip>
+                <Menu positioning="below-start">
+                  <MenuTrigger disableButtonEnhancement>
+                    <Tooltip content="Copy verify-hash command" relationship="label">
+                      <button
+                        type="button"
+                        className={styles.verifyBtn}
+                        aria-label="Copy verify-hash command"
+                      >
+                        <WindowConsoleRegular fontSize={12} />
+                      </button>
+                    </Tooltip>
+                  </MenuTrigger>
+                  <MenuPopover>
+                    <MenuList>
+                      <MenuItem
+                        onClick={() =>
+                          onCopy(
+                            buildVerifyCommand("powershell", item.name, item.sha256!),
+                            "PowerShell verify command",
+                          )
+                        }
+                      >
+                        PowerShell
+                      </MenuItem>
+                      <MenuItem
+                        onClick={() =>
+                          onCopy(
+                            buildVerifyCommand("cmd", item.name, item.sha256!),
+                            "cmd.exe verify command",
+                          )
+                        }
+                      >
+                        Command Prompt
+                      </MenuItem>
+                      <MenuItem
+                        onClick={() =>
+                          onCopy(
+                            buildVerifyCommand("bash", item.name, item.sha256!),
+                            "Bash verify command",
+                          )
+                        }
+                      >
+                        Bash (Linux / macOS)
+                      </MenuItem>
+                    </MenuList>
+                  </MenuPopover>
+                </Menu>
+              </div>
+            )}
+          </div>
         </TableCellLayout>
       </TableCell>
       <TableCell>

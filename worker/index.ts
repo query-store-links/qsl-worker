@@ -283,20 +283,72 @@ async function handleAppx(
       };
     }
 
+    // SHA-256 lives on the DCat-side `Package` metadata (handler.packages),
+    // keyed by `packageFullName`. The FE3 `packageMoniker` is the same
+    // identity but uses `~` as the empty-ResourceID placeholder, so DCat's
+    // `Name_Ver_Arch__PubHash` shows up as `Name_Ver_Arch_~_PubHash` here.
+    // Normalise both sides to a common key. We also accept matches by
+    // `packageId` (Package) ↔ `applicabilityBlob["content.packageId"]`
+    // (PackageInstance) when the name-based join misses.
+    const normalizeKey = (s: string): string => s.replace(/_~_/g, "__");
+    const sha256ByName = new Map<string, string>();
+    const sha256ByPackageId = new Map<string, string>();
+    for (const p of handler.packages) {
+      const hash = p.hash;
+      const algo = p.hashAlgorithm;
+      if (!hash) continue;
+      if (algo && algo.toLowerCase() !== "sha256") continue;
+      const lower = hash.toLowerCase();
+      if (p.packageFullName) sha256ByName.set(normalizeKey(p.packageFullName), lower);
+      if (p.packageId) sha256ByPackageId.set(p.packageId, lower);
+    }
+    const lookupSha = (pkg: PackageInstance): string | null => {
+      const nameKey = normalizeKey(pkg.packageMoniker);
+      const byName = sha256ByName.get(nameKey);
+      if (byName) return byName;
+      const pid = pkg.applicabilityBlob?.["content.packageId"];
+      if (pid) {
+        const byId = sha256ByPackageId.get(pid);
+        if (byId) return byId;
+      }
+      return null;
+    };
+
     // PackageInstance carries packageSize (FE3-reported bytes) and a
     // pre-formatted readableFileName — no HEAD requests needed any more.
-    const items: DownloadItem[] = packages.map((pkg) => ({
-      FileName: pkg.readableFileName || pkg.packageMoniker || "Unknown",
-      FileLink: pkg.packageUri ?? "",
-      FileSize: bytesToString(pkg.packageSize),
-    }));
+    //
+    // FE3's update graph can surface the same package under multiple update
+    // IDs, so storelib may return multiple PackageInstances for one file.
+    // Dedupe by packageUri (canonical pointer), falling back to packageMoniker
+    // for framework packages where packageUri is null.
+    const seen = new Set<string>();
+    const items: DownloadItem[] = [];
+    let hashMatched = 0;
+    for (const pkg of packages) {
+      const key = pkg.packageUri || pkg.packageMoniker;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const sha = lookupSha(pkg);
+      if (sha) hashMatched++;
+      items.push({
+        FileName: pkg.readableFileName || pkg.packageMoniker || "Unknown",
+        FileLink: pkg.packageUri ?? "",
+        FileSize: bytesToString(pkg.packageSize),
+        Sha256: sha,
+      });
+    }
 
     return {
       ProductId: productId,
       AppInfo: appInfo,
       AppxPackages: items,
       Warnings: warnings.length ? warnings : undefined,
-      Debug: debug,
+      Debug: {
+        ...debug,
+        dcatPackageCount: handler.packages.length,
+        dcatPackagesWithSha256: sha256ByName.size,
+        itemsWithSha256: hashMatched,
+      },
     };
   } finally {
     handler.free();
