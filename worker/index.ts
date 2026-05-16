@@ -636,6 +636,7 @@ export default {
         apiDisabled,
         version: __APP_VERSION__,
         storelibVersion: __STORELIB_VERSION__,
+        commit: __APP_COMMIT__ || null,
       });
     } else if (url.pathname === "/api/_debug/parse") {
       const tag = url.searchParams.get("tag") ?? "en-US";

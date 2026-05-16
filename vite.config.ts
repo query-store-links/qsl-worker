@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
@@ -25,6 +26,18 @@ const storelibPkg = JSON.parse(
   ),
 ) as { version: string };
 
+// Short commit SHA at build time. Falls back to an empty string outside a
+// git checkout (e.g. CI artifacts unpacked without `.git/`) — the UI hides
+// the commit chip when this is empty.
+let commit = "";
+try {
+  commit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+    .toString()
+    .trim();
+} catch {
+  /* not a git checkout — leave commit empty */
+}
+
 // The published `@query-store-links/storelib_rs` package's `exports` field
 // only exposes the root entry, and the root resolves to the `bundler/` flavour
 // — which the Cloudflare Vite plugin can ship in a production build but
@@ -45,6 +58,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __STORELIB_VERSION__: JSON.stringify(storelibPkg.version),
+    __APP_COMMIT__: JSON.stringify(commit),
   },
   resolve: {
     alias: {

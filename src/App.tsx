@@ -65,6 +65,8 @@ const DEFAULT_FORM: SearchFormData = {
 
 const KNOWN_PATHS = new Set(["/", "/index.html"]);
 
+const REPO_URL = "https://github.com/query-store-links/qsl-worker";
+
 /** Hosts on the project's own apex domain — the resolver deployment lives
  *  here (see wrangler.jsonc routes), so a user pointing at any subdomain of
  *  it is effectively still using the first-party backend. Suppress the
@@ -667,6 +669,19 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         <footer className={styles.footer}>
           <Text size={200}>
             {t("app.brand")} · {t("app.tagline")}
+            {__APP_COMMIT__ && (
+              <>
+                {" · "}
+                {t("app.footer.uiVersion")}{" "}
+                <Link
+                  href={`${REPO_URL}/commit/${__APP_COMMIT__}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {__APP_COMMIT__}
+                </Link>
+              </>
+            )}
             {(() => {
               const host = settings.backend
                 ? (() => {
@@ -685,15 +700,24 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
               const slibPart = backendMeta?.storelibVersion
                 ? t("app.footer.storelib", { version: backendMeta.storelibVersion })
                 : "";
-              return ` · ${t("app.footer.via", { host, version: ver, storelib: slibPart })}`;
+              return t("app.footer.viaLead", { host, version: ver, storelib: slibPart });
             })()}
+            {backendMeta?.commit && (
+              <>
+                {t("app.footer.apiCommitSep")}
+                <Link
+                  href={`${REPO_URL}/commit/${backendMeta.commit}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {backendMeta.commit}
+                </Link>
+              </>
+            )}
+            {t("app.footer.viaTail")}
           </Text>
           <Text size={200}>
-            <Link
-              href="https://github.com/query-store-links/qsl-worker"
-              target="_blank"
-              rel="noreferrer"
-            >
+            <Link href={REPO_URL} target="_blank" rel="noreferrer">
               {t("app.footer.github")}
             </Link>{" "}
             · {t("app.footer.copy")}

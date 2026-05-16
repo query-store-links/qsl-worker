@@ -32,7 +32,10 @@ const en: Dict = {
   "app.hero.titleHighlight": "download links",
   "app.hero.sub":
     "Look up direct MSIX, APPX, and bundle URLs for any package on the Microsoft Store. Supports all identifier types — modern and legacy.",
-  "app.footer.via": "Via {host} ({version}{storelib})",
+  "app.footer.uiVersion": "UI version",
+  "app.footer.viaLead": ", Via {host} ({version}{storelib}",
+  "app.footer.apiCommitSep": ", commit ",
+  "app.footer.viaTail": ")",
   "app.footer.versionUnknown": "unknown version",
   "app.footer.storelib": " with storelib v{version}",
   "app.footer.github": "GitHub",
@@ -299,7 +302,10 @@ const zh: Dict = {
   "app.hero.titleHighlight": "下载链接",
   "app.hero.sub":
     "查询 Microsoft Store 中任意应用的 MSIX、APPX 直链和捆绑包 URL。支持所有标识符类型 —— 包括现代标识符与旧版标识符。",
-  "app.footer.via": "经由 {host}（{version}{storelib}）",
+  "app.footer.uiVersion": "UI 版本",
+  "app.footer.viaLead": "，经由 {host}（{version}{storelib}",
+  "app.footer.apiCommitSep": "，commit ",
+  "app.footer.viaTail": "）",
   "app.footer.versionUnknown": "版本未知",
   "app.footer.storelib": "，storelib v{version}",
   "app.footer.github": "GitHub",

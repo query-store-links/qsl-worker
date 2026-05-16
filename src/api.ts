@@ -286,6 +286,9 @@ export interface WorkerMeta {
    *  the actual resolver running, not whatever range was declared. `null`
    *  on older deployments. */
   storelibVersion: string | null;
+  /** Short git commit SHA the worker was built from. `null` on older
+   *  deployments or builds made outside a git checkout. */
+  commit: string | null;
 }
 
 /** Probe the same-origin worker's status. Tries `/api/_meta` first; if the
@@ -301,6 +304,7 @@ export async function fetchMeta(signal?: AbortSignal): Promise<WorkerMeta | null
         apiDisabled: body.apiDisabled === true,
         version: typeof body.version === "string" ? body.version : null,
         storelibVersion: typeof body.storelibVersion === "string" ? body.storelibVersion : null,
+        commit: typeof body.commit === "string" ? body.commit : null,
       };
     }
     // Anything other than 2xx is treated as "no _meta here" — fall through.
@@ -313,7 +317,8 @@ export async function fetchMeta(signal?: AbortSignal): Promise<WorkerMeta | null
   // rejection" we want. Any HTTP response (even 5xx) means the worker is up.
   try {
     const res = await fetch("/api/links/resolve-all", { signal, method: "GET" });
-    if (res.status > 0) return { apiDisabled: false, version: null, storelibVersion: null };
+    if (res.status > 0)
+      return { apiDisabled: false, version: null, storelibVersion: null, commit: null };
     return null;
   } catch {
     return null;
@@ -338,6 +343,7 @@ export async function fetchBackendMeta(
       apiDisabled: body.apiDisabled === true,
       version: typeof body.version === "string" ? body.version : null,
       storelibVersion: typeof body.storelibVersion === "string" ? body.storelibVersion : null,
+      commit: typeof body.commit === "string" ? body.commit : null,
     };
   } catch {
     return null;
