@@ -56,12 +56,17 @@ const useStyles = makeStyles({
     display: "flex",
     alignItems: "center",
     columnGap: "16px",
+    "@media (max-width: 600px)": {
+      padding: "0 12px",
+      columnGap: "8px",
+    },
   },
   brand: {
     display: "flex",
     alignItems: "center",
     columnGap: "10px",
     minWidth: 0,
+    flexShrink: 1,
   },
   logo: {
     width: "28px",
@@ -74,9 +79,23 @@ const useStyles = makeStyles({
     flexDirection: "column",
     lineHeight: 1.1,
     minWidth: 0,
+    overflow: "hidden",
   },
-  brandTitle: { fontSize: "14px", fontWeight: 600, letterSpacing: "-0.1px" },
-  brandSub: { fontSize: "11px", color: tokens.colorNeutralForeground3 },
+  brandTitle: {
+    fontSize: "14px",
+    fontWeight: 600,
+    letterSpacing: "-0.1px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  brandSub: {
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
   spacer: { flex: 1 },
   pill: {
     display: "inline-flex",
@@ -177,9 +196,7 @@ export function TopBar({
   };
   const reset = () => setDraft({ backend: DEFAULT_BACKEND, customMarket: "", locale: "en-US" });
 
-  const backendLabel = settings.backend
-    ? settings.backend.replace(/^https?:\/\//, "")
-    : "same-origin worker";
+  const backendLabel = settings.backend ? settings.backend.replace(/^https?:\/\//, "") : null;
 
   return (
     <header className={styles.header}>
@@ -197,7 +214,7 @@ export function TopBar({
         <Tooltip content="Backend · click to configure" relationship="label">
           <button type="button" className={styles.pill} onClick={() => setOpen(true)}>
             <span className={styles.pillDot} aria-hidden />
-            <Text className={`qsl-mono ${styles.pillText}`}>{backendLabel}</Text>
+            {backendLabel && <Text className={`qsl-mono ${styles.pillText}`}>{backendLabel}</Text>}
           </button>
         </Tooltip>
 

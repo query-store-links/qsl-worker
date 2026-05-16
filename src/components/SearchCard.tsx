@@ -78,6 +78,9 @@ const useStyles = makeStyles({
     borderRadius: tokens.borderRadiusSmall,
     padding: "2px 6px",
     backgroundColor: tokens.colorNeutralBackground2,
+    "@media (max-width: 600px)": {
+      display: "none",
+    },
   },
   inputWrap: { marginTop: "8px" },
   detection: {
