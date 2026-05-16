@@ -200,6 +200,104 @@ async function readNdjsonStream(
   return result;
 }
 
+export interface WorkerMeta {
+  apiDisabled: boolean;
+  /** Worker package.json version. `null` when the backend predates the
+   *  /api/_meta endpoint and was detected via a resolve-endpoint fallback. */
+  version: string | null;
+  /** Installed `@query-store-links/storelib_rs` version on the worker —
+   *  the actual resolver running, not whatever range was declared. `null`
+   *  on older deployments. */
+  storelibVersion: string | null;
+}
+
+/** Probe the same-origin worker's status. Tries `/api/_meta` first; if the
+ *  endpoint is absent (older deployment) falls back to GET `/api/links/resolve-all`,
+ *  which always returns 405 on the working worker — a "proper rejection" still
+ *  proves the API is up. Returns `null` on network failure. */
+export async function fetchMeta(signal?: AbortSignal): Promise<WorkerMeta | null> {
+  try {
+    const res = await fetch("/api/_meta", { signal });
+    if (res.ok) {
+      const body = (await res.json()) as Partial<WorkerMeta>;
+      return {
+        apiDisabled: body.apiDisabled === true,
+        version: typeof body.version === "string" ? body.version : null,
+        storelibVersion: typeof body.storelibVersion === "string" ? body.storelibVersion : null,
+      };
+    }
+    // Anything other than 2xx is treated as "no _meta here" — fall through.
+  } catch {
+    return null;
+  }
+
+  // Older deployment fallback: ask the actual resolve endpoint. A GET on the
+  // POST-only handler returns 405 with a JSON body — that's the "proper
+  // rejection" we want. Any HTTP response (even 5xx) means the worker is up.
+  try {
+    const res = await fetch("/api/links/resolve-all", { signal, method: "GET" });
+    if (res.status > 0) return { apiDisabled: false, version: null, storelibVersion: null };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read a *custom* backend's `/api/_meta` over CORS. Returns the parsed meta
+ *  on success, or `null` when the backend is unreachable, doesn't ship the
+ *  endpoint, or refuses CORS preflight. The caller should fall back to
+ *  `probeBackend` for plain liveness when this returns `null`. */
+export async function fetchBackendMeta(
+  backend: string,
+  signal?: AbortSignal,
+): Promise<WorkerMeta | null> {
+  if (!backend) return null;
+  const url = `${backend.replace(/\/$/, "")}/api/_meta`;
+  try {
+    const res = await fetch(url, { signal, cache: "no-store" });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Partial<WorkerMeta>;
+    return {
+      apiDisabled: body.apiDisabled === true,
+      version: typeof body.version === "string" ? body.version : null,
+      storelibVersion: typeof body.storelibVersion === "string" ? body.storelibVersion : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Liveness probe for a custom backend. Uses `no-cors` mode so a server that
+ *  doesn't set CORS headers (or returns 4xx/5xx) still counts as reachable —
+ *  the goal is only to differentiate "host responded" from "host unreachable
+ *  / DNS dead / refused / TLS broken". Tries `/api/_meta` first; if the first
+ *  attempt throws (DNS/TLS/refused), retries against `/api/links/resolve-all`
+ *  to support older deployments that don't expose the meta endpoint. */
+export async function probeBackend(backend: string, signal?: AbortSignal): Promise<boolean> {
+  if (!backend) return false;
+  const base = backend.replace(/\/$/, "");
+  try {
+    await fetch(`${base}/api/_meta`, { signal, mode: "no-cors", cache: "no-store" });
+    return true;
+  } catch {
+    // First call threw — but with no-cors a real network failure is the only
+    // way to get here, so the retry will almost always fail too. We still do
+    // it for paranoia: some proxies / WAFs may reject specific paths but pass
+    // others.
+  }
+  try {
+    await fetch(`${base}/api/links/resolve-all`, {
+      signal,
+      method: "GET",
+      mode: "no-cors",
+      cache: "no-store",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function mockResults(input: string): NormalizedItem[] {
   const seed = input.length || 5;
   const base = [

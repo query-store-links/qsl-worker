@@ -15,6 +15,12 @@
   "observability": {
     "enabled": true,
   },
+  "vars": {
+    // Set to "true" to refuse same-origin /api/links/resolve-all requests.
+    // The SPA still loads from the same origin; users must point Settings →
+    // API Backend at a third-party deployment for resolutions to work.
+    "DISABLE_API": "false",
+  },
   "upload_source_maps": true,
   "compatibility_flags": ["nodejs_compat"],
   "routes": [

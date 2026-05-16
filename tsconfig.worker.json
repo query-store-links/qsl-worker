@@ -14,5 +14,5 @@
       ]
     }
   },
-  "include": ["worker", "src/shared.ts"]
+  "include": ["worker", "src/shared.ts", "src/globals.d.ts"]
 }

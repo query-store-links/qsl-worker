@@ -32,7 +32,16 @@ import { DebugPanel } from "./components/DebugPanel";
 import { NotFoundPage } from "./components/NotFoundPage";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { useLocalState } from "./hooks";
-import { callBackend, mockResults, type BackendError, type ProgressUpdate } from "./api";
+import {
+  callBackend,
+  fetchBackendMeta,
+  fetchMeta,
+  mockResults,
+  probeBackend,
+  type BackendError,
+  type ProgressUpdate,
+  type WorkerMeta,
+} from "./api";
 import type { AppInfo, IdentifierType, NormalizedItem, Ring, SearchFormData } from "./shared";
 
 const DEFAULT_FORM: SearchFormData = {
@@ -46,6 +55,32 @@ const DEFAULT_FORM: SearchFormData = {
 };
 
 const KNOWN_PATHS = new Set(["/", "/index.html"]);
+
+/** Hosts on the project's own apex domain — the resolver deployment lives
+ *  here (see wrangler.jsonc routes), so a user pointing at any subdomain of
+ *  it is effectively still using the first-party backend. Suppress the
+ *  third-party warning for these. */
+function isTrustedBackendHost(backend: string): boolean {
+  try {
+    const host = new URL(backend).hostname.toLowerCase();
+    return host === "krnl64.win" || host.endsWith(".krnl64.win");
+  } catch {
+    return false;
+  }
+}
+
+/** Same `*.krnl64.win` check applied to the *UI's* hostname. True for the
+ *  official deployment and any subdomain on the project's apex. Localhost /
+ *  loopback are treated as official since they're obviously dev — a warning
+ *  there is noise. */
+function isOfficialUiHost(): boolean {
+  if (typeof window === "undefined") return true;
+  const host = window.location.hostname.toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1") {
+    return true;
+  }
+  return host === "krnl64.win" || host.endsWith(".krnl64.win");
+}
 
 interface ErrorState {
   err: BackendError | Error;
@@ -200,6 +235,13 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
   const [debug, setDebug] = useState<Record<string, unknown> | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [apiDisabled, setApiDisabled] = useState(false);
+  const [backendMeta, setBackendMeta] = useState<WorkerMeta | null>(null);
+  const [thirdPartyAck, setThirdPartyAck] = useLocalState<string[]>("qsl_trusted_backends", []);
+  const [unofficialAck, setUnofficialAck] = useLocalState<string[]>("qsl_unofficial_ui_ack", []);
+  const [backendHealth, setBackendHealth] = useState<"unknown" | "checking" | "ok" | "down">(
+    "unknown",
+  );
   const abortRef = useRef<AbortController | null>(null);
 
   const pushHistory = (f: SearchFormData, count: number) => {
@@ -252,6 +294,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       setAppInfo(result.raw.AppInfo ?? null);
       setWarnings(result.warnings);
       setDebug(result.debug);
+      setBackendHealth("ok");
       pushHistory(current, filtered.length);
       push("success", `${filtered.length} files resolved`);
     } catch (err) {
@@ -262,6 +305,12 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       const backendErr = err as BackendError;
       const debug = backendErr.response?.Debug ?? null;
       const respWarnings = backendErr.response?.Warnings ?? [];
+      // `BackendError` only fires after we received a response, so we know
+      // the host is alive even if it errored. A bare Error (no .status) is
+      // typically a network failure — mark the backend down so the pill dot
+      // turns red.
+      if (typeof backendErr?.status === "number") setBackendHealth("ok");
+      else setBackendHealth("down");
       setErrorState({
         err: err as Error,
         warnings: respWarnings,
@@ -304,6 +353,47 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const ac = new AbortController();
+    setBackendHealth("checking");
+    setBackendMeta(null);
+    if (settings.backend) {
+      // Try a CORS-enabled meta read first so we can surface the version.
+      // If the backend doesn't expose CORS (or _meta is absent), fall back
+      // to the lenient no-cors liveness probe.
+      fetchBackendMeta(settings.backend, ac.signal).then((meta) => {
+        if (ac.signal.aborted) return;
+        if (meta) {
+          setBackendMeta(meta);
+          setBackendHealth("ok");
+          return;
+        }
+        probeBackend(settings.backend, ac.signal).then((alive) => {
+          if (!ac.signal.aborted) setBackendHealth(alive ? "ok" : "down");
+        });
+      });
+    } else {
+      // Same-origin: reuse the meta call. Reachable + not disabled → green;
+      // reachable + disabled → still "down" from the user's POV (the API
+      // refuses to resolve), so they need to point Settings at a backend.
+      fetchMeta(ac.signal).then((m) => {
+        if (ac.signal.aborted) return;
+        if (!m) {
+          setBackendHealth("down");
+          return;
+        }
+        setBackendMeta(m);
+        if (m.apiDisabled) {
+          setApiDisabled(true);
+          setBackendHealth("down");
+        } else {
+          setBackendHealth("ok");
+        }
+      });
+    }
+    return () => ac.abort();
+  }, [settings.backend]);
+
   const shareUrl = useMemo(() => {
     if (!form.productInput) return "";
     const sp = new URLSearchParams();
@@ -343,6 +433,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         setSettings={setSettings}
         onOpenHistory={() => setShowHistory(true)}
         historyCount={history.length}
+        backendHealth={backendHealth}
       />
 
       <main className={styles.main}>
@@ -358,6 +449,91 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
             Supports all identifier types — modern and legacy.
           </Body1>
         </div>
+
+        {!isOfficialUiHost() &&
+          typeof window !== "undefined" &&
+          !unofficialAck.includes(window.location.hostname) && (
+            <MessageBar intent="warning" layout="multiline">
+              <MessageBarBody>
+                <MessageBarTitle>Unofficial deployment</MessageBarTitle>
+                <Body1 block>
+                  You're using a copy of the Query Store Links UI hosted at{" "}
+                  <Text className="qsl-mono">{window.location.host}</Text>, not the official{" "}
+                  <Text className="qsl-mono">qsl.krnl64.win</Text>. The page you're looking at may
+                  have been modified by whoever runs this host — it can log everything you submit or
+                  rewrite the URLs it shows you. Only proceed if you trust the operator.
+                </Body1>
+              </MessageBarBody>
+              <MessageBarActions
+                containerAction={
+                  <Tooltip content="I trust this host — don't warn again" relationship="label">
+                    <Button
+                      aria-label="Acknowledge unofficial deployment"
+                      appearance="transparent"
+                      icon={<DismissRegular />}
+                      onClick={() =>
+                        setUnofficialAck((p) =>
+                          p.includes(window.location.hostname)
+                            ? p
+                            : [...p, window.location.hostname],
+                        )
+                      }
+                    />
+                  </Tooltip>
+                }
+              />
+            </MessageBar>
+          )}
+
+        {apiDisabled && !settings.backend && (
+          <MessageBar intent="error" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>Built-in resolver disabled</MessageBarTitle>
+              <Body1 block>
+                This deployment's same-origin API is turned off. Open Settings and set{" "}
+                <Text weight="semibold">API Backend</Text> to a third-party QSL endpoint, or host
+                your own. Resolves will fail until you do.
+              </Body1>
+              <Body1 block>
+                <Text weight="semibold">Heads-up:</Text> any backend you enter receives every
+                identifier you look up and serves the download URLs back. Only use one you trust.
+              </Body1>
+            </MessageBarBody>
+          </MessageBar>
+        )}
+
+        {settings.backend &&
+          !isTrustedBackendHost(settings.backend) &&
+          !thirdPartyAck.includes(settings.backend) && (
+            <MessageBar intent="warning" layout="multiline">
+              <MessageBarBody>
+                <MessageBarTitle>Using a third-party backend</MessageBarTitle>
+                <Body1 block>
+                  Queries go to{" "}
+                  <Text className="qsl-mono">{settings.backend.replace(/^https?:\/\//, "")}</Text>.
+                  That host sees every identifier you submit and returns the download URLs you'll
+                  click — a malicious one can log your queries or serve poisoned packages. Only
+                  proceed if you trust the operator.
+                </Body1>
+              </MessageBarBody>
+              <MessageBarActions
+                containerAction={
+                  <Tooltip content="I trust this backend — don't warn again" relationship="label">
+                    <Button
+                      aria-label="Acknowledge third-party backend"
+                      appearance="transparent"
+                      icon={<DismissRegular />}
+                      onClick={() =>
+                        setThirdPartyAck((p) =>
+                          p.includes(settings.backend) ? p : [...p, settings.backend],
+                        )
+                      }
+                    />
+                  </Tooltip>
+                }
+              />
+            </MessageBar>
+          )}
 
         <div className={`qsl-fade-up ${styles.delay60}`}>
           <SearchCard
@@ -464,7 +640,27 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         )}
 
         <footer className={styles.footer}>
-          <Text size={200}>Query Store Links · MSIX bundle resolver</Text>
+          <Text size={200}>
+            Query Store Links · MSIX bundle resolver
+            {(() => {
+              const host = settings.backend
+                ? (() => {
+                    try {
+                      return new URL(settings.backend).host;
+                    } catch {
+                      return settings.backend;
+                    }
+                  })()
+                : typeof window !== "undefined"
+                  ? window.location.host
+                  : "same-origin";
+              const ver = backendMeta?.version ? `v${backendMeta.version}` : "unknown version";
+              const slibPart = backendMeta?.storelibVersion
+                ? ` with storelib v${backendMeta.storelibVersion}`
+                : "";
+              return ` · Via ${host} (${ver}${slibPart})`;
+            })()}
+          </Text>
           <Text size={200}>
             <Link
               href="https://github.com/query-store-links/qsl-worker"

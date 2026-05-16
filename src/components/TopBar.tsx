@@ -10,6 +10,7 @@ import {
   Text,
   Tooltip,
   makeStyles,
+  mergeClasses,
   tokens,
 } from "@fluentui/react-components";
 import {
@@ -29,6 +30,8 @@ export interface AppSettings {
 
 export const DEFAULT_BACKEND = "";
 
+export type BackendHealth = "unknown" | "checking" | "ok" | "down";
+
 interface TopBarProps {
   isDark: boolean;
   setIsDark: (v: boolean) => void;
@@ -36,6 +39,7 @@ interface TopBarProps {
   setSettings: (v: AppSettings | ((p: AppSettings) => AppSettings)) => void;
   onOpenHistory: () => void;
   historyCount: number;
+  backendHealth: BackendHealth;
 }
 
 const useStyles = makeStyles({
@@ -116,8 +120,16 @@ const useStyles = makeStyles({
     width: "6px",
     height: "6px",
     borderRadius: "999px",
+    backgroundColor: tokens.colorNeutralForeground3,
+    boxShadow: `0 0 0 2px color-mix(in srgb, ${tokens.colorNeutralForeground3} 25%, transparent)`,
+  },
+  pillDotOk: {
     backgroundColor: tokens.colorPaletteGreenForeground1,
     boxShadow: `0 0 0 2px color-mix(in srgb, ${tokens.colorPaletteGreenForeground1} 25%, transparent)`,
+  },
+  pillDotDown: {
+    backgroundColor: tokens.colorPaletteRedForeground1,
+    boxShadow: `0 0 0 2px color-mix(in srgb, ${tokens.colorPaletteRedForeground1} 25%, transparent)`,
   },
   pillText: {
     maxWidth: "220px",
@@ -181,6 +193,7 @@ export function TopBar({
   setSettings,
   onOpenHistory,
   historyCount,
+  backendHealth,
 }: TopBarProps) {
   const styles = useStyles();
   const [open, setOpen] = useState(false);
@@ -211,9 +224,27 @@ export function TopBar({
 
         <div className={styles.spacer} />
 
-        <Tooltip content="Backend · click to configure" relationship="label">
+        <Tooltip
+          content={
+            backendHealth === "down"
+              ? "Backend unreachable · click to configure"
+              : backendHealth === "checking"
+                ? "Checking backend…"
+                : backendHealth === "ok"
+                  ? "Backend reachable · click to configure"
+                  : "Backend · click to configure"
+          }
+          relationship="label"
+        >
           <button type="button" className={styles.pill} onClick={() => setOpen(true)}>
-            <span className={styles.pillDot} aria-hidden />
+            <span
+              className={mergeClasses(
+                styles.pillDot,
+                backendHealth === "ok" && styles.pillDotOk,
+                backendHealth === "down" && styles.pillDotDown,
+              )}
+              aria-hidden
+            />
             {backendLabel && <Text className={`qsl-mono ${styles.pillText}`}>{backendLabel}</Text>}
           </button>
         </Tooltip>

@@ -491,13 +491,32 @@ async function serveAsset(request: Request, env: Env): Promise<Response> {
   return new Response(assetRes.body, { status: 404, statusText: "Not Found", headers });
 }
 
+function isApiDisabled(env: Env): boolean {
+  const raw = (env as Env & { DISABLE_API?: string }).DISABLE_API;
+  return typeof raw === "string" && raw.toLowerCase() === "true";
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
 
+    const apiDisabled = isApiDisabled(env);
+
     let response: Response;
-    if (url.pathname === "/api/_debug/parse") {
+    if (url.pathname === "/api/_meta") {
+      // Always available — the SPA reads this on boot so it can prompt the
+      // user to configure a third-party backend when the same-origin API is
+      // intentionally off. `version` mirrors package.json and `storelibVersion`
+      // is the installed `@query-store-links/storelib_rs` version (both
+      // inlined at build time via Vite `define`) so a client can detect
+      // feature parity and which WASM resolver is actually running.
+      response = json({
+        apiDisabled,
+        version: __APP_VERSION__,
+        storelibVersion: __STORELIB_VERSION__,
+      });
+    } else if (url.pathname === "/api/_debug/parse") {
       const tag = url.searchParams.get("tag") ?? "en-US";
       const code = url.searchParams.get("lang") ?? "en";
       const m = url.searchParams.get("market") ?? "US";
@@ -522,7 +541,19 @@ export default {
       }
       response = json({ parsedTag, parsedLang, parsedMarket, err });
     } else if (url.pathname === "/api/links/resolve-all") {
-      response = await resolveAll(request);
+      if (apiDisabled) {
+        response = json(
+          {
+            Errors: [
+              "This deployment's built-in resolver is disabled. Configure a third-party API Backend in Settings to use this UI.",
+            ],
+            Code: 503,
+          },
+          503,
+        );
+      } else {
+        response = await resolveAll(request);
+      }
     } else if (url.pathname.startsWith("/api/")) {
       response = json({ Errors: [`No such API route: ${url.pathname}`], Code: 404 }, 404);
     } else {
