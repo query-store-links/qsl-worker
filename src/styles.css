@@ -1,0 +1,69 @@
+/* Global resets + a handful of design tokens used outside the
+   FluentProvider tree (gradient text, mono font, scrollbars). */
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+html {
+  color-scheme: light dark;
+}
+body {
+  font-family:
+    "Segoe UI Variable",
+    "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Helvetica Neue",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.qsl-mono {
+  font-family: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+.qsl-rail {
+  scrollbar-width: thin;
+}
+.qsl-rail::-webkit-scrollbar {
+  height: 6px;
+}
+.qsl-rail::-webkit-scrollbar-thumb {
+  background: var(--colorNeutralStroke1);
+  border-radius: 3px;
+}
+.qsl-rail::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes qsl-fade-up {
+  from {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.qsl-fade-up {
+  animation: qsl-fade-up 0.35s ease forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qsl-fade-up {
+    animation: none;
+  }
+}
+
+.qsl-headline-gradient {
+  background: linear-gradient(90deg, var(--colorBrandForeground1), #8d4ad9);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
