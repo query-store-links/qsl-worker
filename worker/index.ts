@@ -76,6 +76,58 @@ function errKind(e: unknown): StorelibError["kind"] | "unknown" {
   return "unknown";
 }
 
+// storelib_rs 0.1.8 attaches a `causes: string[]` source-chain to its thrown
+// errors. Surface it in the diagnostic payload so the UI's debug panel can
+// show the underlying reqwest / DNS / TLS failure instead of just the wasm
+// wrapper's generic top-level message.
+function errCauses(e: unknown): string[] | undefined {
+  if (e && typeof e === "object" && "causes" in e) {
+    const c = (e as { causes?: unknown }).causes;
+    if (Array.isArray(c)) return c.filter((s): s is string => typeof s === "string");
+  }
+  return undefined;
+}
+
+/** Parse the message string from a `fe3.linkReceived` progress event back
+ *  into structured fields. storelib 0.1.8 emits one such event per package
+ *  the instant its FE3 download URL is parsed — earlier than the final
+ *  `getPackagesForProduct` resolve completes, which is what lets us stream
+ *  rows into the UI as they arrive.
+ *
+ *  Wire format (defined in storelib_rs's display_catalog.rs):
+ *    "<moniker> | uri=<url> | size=<bytes-or-?> | updateId=<id>"
+ *  The first `" | uri="` is unambiguous (monikers don't contain that token),
+ *  and `size`/`updateId` are anchored to the tail so a URL containing
+ *  embedded `|`s wouldn't break the parser. */
+function parseLinkReceived(
+  message: string,
+): { moniker: string; uri: string; size: number | null; updateId: string } | null {
+  const uriMark = " | uri=";
+  const uriIdx = message.indexOf(uriMark);
+  if (uriIdx < 0) return null;
+  const moniker = message.slice(0, uriIdx);
+  const after = message.slice(uriIdx + uriMark.length);
+
+  const updateIdMark = " | updateId=";
+  const updateIdIdx = after.lastIndexOf(updateIdMark);
+  if (updateIdIdx < 0) return null;
+  const updateId = after.slice(updateIdIdx + updateIdMark.length);
+  const uriAndSize = after.slice(0, updateIdIdx);
+
+  const sizeMark = " | size=";
+  const sizeIdx = uriAndSize.lastIndexOf(sizeMark);
+  if (sizeIdx < 0) return null;
+  const uri = uriAndSize.slice(0, sizeIdx);
+  const sizeStr = uriAndSize.slice(sizeIdx + sizeMark.length);
+  const sizeNum = sizeStr === "?" ? null : Number(sizeStr);
+  return {
+    moniker,
+    uri,
+    size: Number.isFinite(sizeNum as number) ? sizeNum : null,
+    updateId,
+  };
+}
+
 function code(c: string, params?: Record<string, string | number>): ApiCode {
   return params ? { code: c, params } : { code: c };
 }
@@ -271,7 +323,12 @@ async function handleAppx(
       return {
         ...asErrors([code("product.lookupFailed", { detail: String(e) })]),
         ...asWarnings(warnings),
-        Debug: { ...debug, kind: errKind(e), handlerError: handler.error ?? null },
+        Debug: {
+          ...debug,
+          kind: errKind(e),
+          causes: errCauses(e),
+          handlerError: handler.error ?? null,
+        },
       };
     }
 
@@ -301,7 +358,7 @@ async function handleAppx(
         AppInfo: appInfo,
         ...asErrors([code("packages.fetchFailed", { detail: String(e) })]),
         ...asWarnings(warnings),
-        Debug: { ...debug, kind: errKind(e) },
+        Debug: { ...debug, kind: errKind(e), causes: errCauses(e) },
       };
     }
 
@@ -414,7 +471,7 @@ async function oneShotResolveAll(productInput: string, body: ResolveAllRequest):
     return json(
       {
         ...asErrors([code("internal.error", { detail: String(e) })]),
-        Debug: { ...resolved, productInput, kind: errKind(e) },
+        Debug: { ...resolved, productInput, kind: errKind(e), causes: errCauses(e) },
       },
       500,
     );
@@ -427,7 +484,9 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
   const writer = writable.getWriter();
   // Coalesce writes serially so we don't interleave half-written lines if
   // onProgress fires from a sync wasm callback while the previous write is
-  // still in flight.
+  // still in flight. Each `write` is awaited individually — the next chunk
+  // queues immediately, so the producer is never blocked and the consumer
+  // sees lines the moment each one is flushed.
   let queue: Promise<unknown> = Promise.resolve();
   const send = (obj: unknown): Promise<unknown> => {
     queue = queue.then(() =>
@@ -435,6 +494,11 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
     );
     return queue;
   };
+
+  // Per-stream dedup so a package isn't pushed twice when both
+  // `fe3.linkReceived` and `fe3.packageResolved` fire for it (the latter is
+  // emitted after the merge loop, with identical message shape).
+  const seenMonikers = new Set<string>();
 
   (async () => {
     const resolved = resolveLocale(body);
@@ -461,6 +525,35 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
               current: e.current,
               total: e.total,
             });
+            // storelib 0.1.8 emits per-package events with structured
+            // moniker/url/size data in the `message` field:
+            //   • `fe3.linkReceived`    — fires the instant each FE3 SOAP
+            //     response is parsed (true streaming, one at a time).
+            //   • `fe3.packageResolved` — fires in a final merge loop after
+            //     all URLs are in. Same message format. Acts as a fallback
+            //     for builds where `linkReceived` doesn't surface to the JS
+            //     callback; the row still appears before the `result` event.
+            // Dedup by moniker so we only push each package once regardless
+            // of which stage delivered it first.
+            if (e.stage === "fe3.linkReceived" || e.stage === "fe3.packageResolved") {
+              const parsed = parseLinkReceived(e.message);
+              if (
+                parsed &&
+                parsed.uri &&
+                parsed.uri !== "<none>" &&
+                !seenMonikers.has(parsed.moniker)
+              ) {
+                seenMonikers.add(parsed.moniker);
+                void send({
+                  type: "package",
+                  FileName: `${parsed.moniker}.appx`,
+                  FileLink: parsed.uri,
+                  FileSize: bytesToString(parsed.size ?? undefined),
+                  Moniker: parsed.moniker,
+                  UpdateId: parsed.updateId,
+                });
+              }
+            }
           });
       await send({ type: "result", ...result });
     } catch (e) {
@@ -468,7 +561,7 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
       await send({
         type: "result",
         ...asErrors([code("internal.error", { detail: String(e) })]),
-        Debug: { ...resolved, productInput, kind: errKind(e) },
+        Debug: { ...resolved, productInput, kind: errKind(e), causes: errCauses(e) },
       });
     } finally {
       await queue;

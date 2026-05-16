@@ -285,12 +285,25 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
     setResolvedQuery(current.productInput);
 
     try {
+      // Per-resolve dedup: the worker emits one `fe3.linkReceived` per
+      // package, but a retry inside storelib could in principle fire twice
+      // for the same URL — keep the first arrival.
+      const streamedUrls = new Set<string>();
       const result = await callBackend(
         settings.backend,
         settings.customMarket,
         current,
         abortRef.current.signal,
         (e) => setProgress(e),
+        (item) => {
+          if (streamedUrls.has(item.url)) return;
+          streamedUrls.add(item.url);
+          // Honour the user's include filters as rows stream in. Streamed
+          // rows are always APPX (FE3 path), so the NonAppx-only case
+          // simply shows nothing until the final result lands.
+          if (!current.includeAppx) return;
+          setResults((p) => [...p, item]);
+        },
       );
       const filtered = result.items.filter(
         (it) =>
@@ -300,6 +313,8 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       if (filtered.length === 0) {
         throw new CodedClientError([{ code: "client.noDownloadLinks" }]);
       }
+      // Final swap: replace the hashless streamed rows with the canonical
+      // list (sorted as the worker returned them, with SHA-256 attached).
       setResults(filtered);
       setAppInfo(result.raw.AppInfo ?? null);
       setWarnings(result.warnings);

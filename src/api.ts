@@ -26,6 +26,18 @@ export interface ProgressUpdate {
   total: number | null;
 }
 
+// One streaming-package row, emitted by the worker as each package's
+// download URL resolves. The UI surfaces these in real time; the final
+// `result` event still arrives with the canonical list (including SHA-256
+// joined from DCat) and replaces the streamed rows.
+export interface StreamedPackage {
+  fileName: string;
+  fileLink: string;
+  fileSize: string;
+  moniker: string;
+  updateId: string;
+}
+
 /** Frontend-side coded error used when a client-side check fails after a
  *  successful response (e.g. zero usable items). UI surfaces translate via
  *  the `errors` field, just like {@link BackendError}. */
@@ -70,6 +82,7 @@ export async function callBackend(
   form: SearchFormData,
   signal: AbortSignal,
   onProgress?: (e: ProgressUpdate) => void,
+  onPackage?: (item: NormalizedItem) => void,
 ): Promise<BackendResult> {
   const url = `${backend.replace(/\/$/, "")}/api/links/resolve-all`;
   const finalInput = extractProductInput(form.productInput, form.identifierType);
@@ -102,7 +115,23 @@ export async function callBackend(
   const ctype = res.headers.get("content-type") ?? "";
   let raw: ResolveAllResponse | null;
   if (ctype.includes("application/x-ndjson") && res.body) {
-    raw = await readNdjsonStream(res.body, onProgress);
+    // Adapt the raw streamed package into a NormalizedItem the table can
+    // render. Type is always APPX here — `fe3.linkReceived` only fires for
+    // FE3-resolved packages, never the non-Appx winget path or BlockMap.
+    const onPackageRaw = onPackage
+      ? (raw: StreamedPackage) => {
+          onPackage({
+            name: raw.fileName,
+            size: raw.fileSize,
+            sizeBytes: parseSizeStr(raw.fileSize),
+            url: raw.fileLink,
+            type: "APPX",
+            arch: inferArch(raw.fileName),
+            version: inferVersion(raw.fileName),
+          });
+        }
+      : undefined;
+    raw = await readNdjsonStream(res.body, onProgress, onPackageRaw);
   } else {
     // Worker fell back to single-JSON (older deployment, or an upstream
     // proxy stripped the body). Parse it as one shot.
@@ -178,11 +207,20 @@ export async function callBackend(
 async function readNdjsonStream(
   body: ReadableStream<Uint8Array>,
   onProgress?: (e: ProgressUpdate) => void,
+  onPackage?: (p: StreamedPackage) => void,
 ): Promise<ResolveAllResponse | null> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let result: ResolveAllResponse | null = null;
+
+  const toPackage = (evt: Record<string, unknown>): StreamedPackage => ({
+    fileName: String(evt.FileName ?? evt.fileName ?? ""),
+    fileLink: String(evt.FileLink ?? evt.fileLink ?? ""),
+    fileSize: String(evt.FileSize ?? evt.fileSize ?? "Unknown"),
+    moniker: String(evt.Moniker ?? evt.moniker ?? ""),
+    updateId: String(evt.UpdateId ?? evt.updateId ?? ""),
+  });
 
   try {
     for (;;) {
@@ -206,6 +244,8 @@ async function readNdjsonStream(
             current: typeof evt.current === "number" ? evt.current : null,
             total: typeof evt.total === "number" ? evt.total : null,
           });
+        } else if (evt.type === "package" && onPackage) {
+          onPackage(toPackage(evt));
         } else if (evt.type === "result") {
           // Strip the `type` discriminator; the rest matches ResolveAllResponse.
           const { type: _t, ...rest } = evt;
