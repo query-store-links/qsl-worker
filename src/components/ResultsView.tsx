@@ -37,7 +37,7 @@ import {
   OpenRegular,
   WindowConsoleRegular,
 } from "@fluentui/react-icons";
-import { formatBytes, type NormalizedItem, type PackageType } from "../shared";
+import { formatBytes, type AppInfo, type NormalizedItem, type PackageType } from "../shared";
 
 type FilterKey = "all" | PackageType;
 type SortKey = "name" | "size" | "type" | "arch";
@@ -69,6 +69,7 @@ function buildVerifyCommand(shell: Shell, file: string, hash: string): string {
 interface ResultsViewProps {
   results: NormalizedItem[];
   query: string;
+  appInfo: AppInfo | null;
   onCopy: (text: string, what: string) => void;
 }
 
@@ -176,6 +177,25 @@ const useStyles = makeStyles({
     "&:hover": { color: tokens.colorNeutralForeground2 },
   },
   hashLabel: { color: tokens.colorNeutralForeground4 },
+  metaChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "6px",
+    marginTop: "4px",
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+    cursor: "pointer",
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusSmall,
+    padding: "1px 6px",
+    backgroundColor: "transparent",
+    fontFamily: "inherit",
+    "&:hover": {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+      color: tokens.colorNeutralForeground2,
+    },
+  },
+  metaLabel: { color: tokens.colorNeutralForeground4 },
   verifyBtn: {
     display: "inline-flex",
     alignItems: "center",
@@ -217,7 +237,7 @@ const useStyles = makeStyles({
   ckShellRight: { paddingRight: "20px" },
 });
 
-export function ResultsView({ results, query, onCopy }: ResultsViewProps) {
+export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProps) {
   const styles = useStyles();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
@@ -333,6 +353,23 @@ export function ResultsView({ results, query, onCopy }: ResultsViewProps) {
             <Text className={`qsl-mono ${styles.query}`} title={query}>
               {query}
             </Text>
+          )}
+          {appInfo?.CategoryId && (
+            <Tooltip
+              content={`WU Category ID · click to copy · ${appInfo.CategoryId}`}
+              relationship="label"
+            >
+              <button
+                type="button"
+                className={`qsl-mono ${styles.metaChip}`}
+                onClick={() => onCopy(appInfo.CategoryId!, "Category ID")}
+                aria-label="Copy Category ID"
+              >
+                <span className={styles.metaLabel}>Category</span>
+                <span>{appInfo.CategoryId}</span>
+                <CopyRegular fontSize={11} />
+              </button>
+            </Tooltip>
           )}
         </div>
         <div className={styles.filterInputWrap}>

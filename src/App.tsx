@@ -33,7 +33,7 @@ import { NotFoundPage } from "./components/NotFoundPage";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { useLocalState } from "./hooks";
 import { callBackend, mockResults, type BackendError, type ProgressUpdate } from "./api";
-import type { IdentifierType, NormalizedItem, Ring, SearchFormData } from "./shared";
+import type { AppInfo, IdentifierType, NormalizedItem, Ring, SearchFormData } from "./shared";
 
 const DEFAULT_FORM: SearchFormData = {
   productInput: "",
@@ -191,6 +191,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
   const [form, setForm] = useLocalState<SearchFormData>("qsl_form", DEFAULT_FORM);
   const [history, setHistory] = useLocalState<HistoryItem[]>("qsl_history", []);
   const [results, setResults] = useState<NormalizedItem[]>([]);
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [resolvedQuery, setResolvedQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
@@ -228,6 +229,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
     setDebug(null);
     setNotice(null);
     setResults([]);
+    setAppInfo(null);
     setResolvedQuery(current.productInput);
 
     try {
@@ -247,6 +249,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         throw new Error("No download links returned for this identifier.");
       }
       setResults(filtered);
+      setAppInfo(result.raw.AppInfo ?? null);
       setWarnings(result.warnings);
       setDebug(result.debug);
       pushHistory(current, filtered.length);
@@ -451,7 +454,12 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
 
         {results.length > 0 && (
           <div className="qsl-fade-up">
-            <ResultsView results={results} query={resolvedQuery} onCopy={onCopy} />
+            <ResultsView
+              results={results}
+              query={resolvedQuery}
+              appInfo={appInfo}
+              onCopy={onCopy}
+            />
           </div>
         )}
 
