@@ -17,7 +17,7 @@
   "dependencies": {
     "@fluentui/react-components": "^9.73.8",
     "@fluentui/react-icons": "^2.0.326",
-    "@query-store-links/storelib_rs": "^0.1.7",
+    "@query-store-links/storelib_rs": "0.1.7-fix-1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },

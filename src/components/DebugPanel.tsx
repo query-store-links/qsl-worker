@@ -82,9 +82,45 @@ const useStyles = makeStyles({
     lineHeight: "inherit",
   },
 
+  // Two-column key/value table used by both intents to surface the
+  // most-useful diagnostic fields without making the user parse JSON.
+  factsGrid: {
+    display: "grid",
+    gridTemplateColumns: "minmax(110px, max-content) minmax(0, 1fr)",
+    columnGap: "12px",
+    rowGap: "6px",
+    alignItems: "baseline",
+  },
+  factKey: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: "12px",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+  },
+  factValue: {
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground1,
+    overflowWrap: "anywhere",
+  },
+  factValueMono: {
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground1,
+    overflowWrap: "anywhere",
+    fontFamily: '"Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace',
+  },
+  statusOk: { color: tokens.colorPaletteGreenForeground1, fontWeight: 600 },
+  statusBad: { color: tokens.colorPaletteDarkOrangeForeground1, fontWeight: 600 },
+
+  // Disclosure for the raw JSON inside the diagnostic body.
+  dumpToggle: {
+    alignSelf: "flex-start",
+    paddingLeft: "4px",
+    paddingRight: "4px",
+    color: tokens.colorNeutralForeground2,
+  },
+
   // Info-mode layout: a quiet inline disclosure rather than a MessageBar +
-  // Card + Accordion stack. One header row (chevron · label · meta · actions),
-  // optional body underneath only when expanded.
+  // Card + Accordion stack.
   infoCard: {
     paddingTop: 0,
     paddingRight: 0,
@@ -125,8 +161,11 @@ const useStyles = makeStyles({
     maxWidth: "320px",
   },
   infoBody: {
-    padding: "10px 12px 12px",
+    padding: "12px 14px 14px",
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+    display: "flex",
+    flexDirection: "column",
+    rowGap: "12px",
   },
 });
 
@@ -141,13 +180,14 @@ export function DebugPanel({
   subtitle,
   startOpen,
 }: DebugPanelProps) {
+  const facts = collectFacts(error, debug);
   const dump = buildDump(error, warnings, debug);
 
   if (intent === "info") {
     return (
       <InfoDebug
         title={title}
-        debug={debug}
+        facts={facts}
         dump={dump}
         startOpen={startOpen ?? false}
         onDismiss={onDismiss}
@@ -162,6 +202,7 @@ export function DebugPanel({
       error={error}
       warnings={warnings}
       subtitle={subtitle}
+      facts={facts}
       dump={dump}
       startOpen={startOpen ?? true}
       onDismiss={onDismiss}
@@ -177,6 +218,7 @@ interface ErrorDebugProps {
   error: BackendError | Error | null;
   warnings: string[];
   subtitle?: ReactNode;
+  facts: Fact[];
   dump: string;
   startOpen: boolean;
   onDismiss: () => void;
@@ -188,6 +230,7 @@ function ErrorDebug({
   error,
   warnings,
   subtitle,
+  facts,
   dump,
   startOpen,
   onDismiss,
@@ -195,18 +238,14 @@ function ErrorDebug({
 }: ErrorDebugProps) {
   const styles = useStyles();
   const [openIds, setOpenIds] = useState<string[]>(startOpen ? ["summary"] : []);
+  const message = cleanErrorMessage(error?.message);
 
   return (
     <MessageBar intent="error" politeness="assertive">
       <MessageBarBody>
         <MessageBarTitle>{title}</MessageBarTitle>
-        <Body1 block>{error?.message ?? "An unknown error occurred."}</Body1>
-        {subtitle ?? (
-          <Caption1 block>
-            Showing sample data below so you can keep working. Expand{" "}
-            <Text weight="semibold">Diagnostics</Text> for what the worker tried.
-          </Caption1>
-        )}
+        <Body1 block>{message ?? "An unknown error occurred."}</Body1>
+        {subtitle}
 
         <Card appearance="subtle">
           <Accordion
@@ -241,25 +280,12 @@ function ErrorDebug({
               </AccordionHeader>
               <AccordionPanel>
                 <div className={styles.details}>
-                  <div className={styles.row}>
-                    <Caption1>
-                      Copy this to a bug report — it includes the request, the raw response, and the
-                      storelib_rs debug fields.
-                    </Caption1>
-                    <Tooltip content="Copy to clipboard" relationship="label">
-                      <Button
-                        size="small"
-                        appearance="subtle"
-                        icon={<CopyRegular />}
-                        onClick={() => onCopy(dump, "diagnostic bundle")}
-                      >
-                        Copy
-                      </Button>
-                    </Tooltip>
-                  </div>
-                  <div className={styles.block}>
-                    <pre className={styles.pre}>{dump}</pre>
-                  </div>
+                  {facts.length > 0 && <FactGrid facts={facts} />}
+                  <RawDump
+                    dump={dump}
+                    onCopy={() => onCopy(dump, "diagnostic bundle")}
+                    initiallyOpen
+                  />
                   {isBackendError(error) && (
                     <Body1>
                       Endpoint:{" "}
@@ -303,17 +329,20 @@ function ErrorDebug({
 
 interface InfoDebugProps {
   title: string;
-  debug: Record<string, unknown> | null;
+  facts: Fact[];
   dump: string;
   startOpen: boolean;
   onDismiss: () => void;
   onCopy: (text: string, label: string) => void;
 }
 
-function InfoDebug({ title, debug, dump, startOpen, onDismiss, onCopy }: InfoDebugProps) {
+function InfoDebug({ title, facts, dump, startOpen, onDismiss, onCopy }: InfoDebugProps) {
   const styles = useStyles();
   const [open, setOpen] = useState(startOpen);
-  const meta = summariseDebug(debug);
+  const meta = facts
+    .filter((f) => f.key === "idType" || f.key === "tag" || f.key === "market")
+    .map((f) => f.value)
+    .join(" · ");
 
   return (
     <div className={styles.infoCard} role="group" aria-label={title}>
@@ -357,16 +386,138 @@ function InfoDebug({ title, debug, dump, startOpen, onDismiss, onCopy }: InfoDeb
       </div>
       {open && (
         <div className={styles.infoBody}>
-          <div className={styles.block}>
-            <pre className={styles.pre}>{dump}</pre>
-          </div>
+          {facts.length > 0 && <FactGrid facts={facts} />}
+          <RawDump dump={dump} onCopy={() => onCopy(dump, "diagnostic bundle")} />
         </div>
       )}
     </div>
   );
 }
 
+// ── shared sub-components ──────────────────────────────────────────────────
+
+function FactGrid({ facts }: { facts: Fact[] }) {
+  const styles = useStyles();
+  return (
+    <div className={styles.factsGrid}>
+      {facts.map((f) => (
+        <FactRow key={f.key} fact={f} />
+      ))}
+    </div>
+  );
+}
+
+function FactRow({ fact }: { fact: Fact }) {
+  const styles = useStyles();
+  return (
+    <>
+      <Caption1 className={styles.factKey}>{fact.label}</Caption1>
+      <Text
+        className={
+          fact.tone === "ok"
+            ? mergeClasses(styles.factValue, styles.statusOk)
+            : fact.tone === "bad"
+              ? mergeClasses(styles.factValue, styles.statusBad)
+              : fact.mono
+                ? styles.factValueMono
+                : styles.factValue
+        }
+        title={typeof fact.value === "string" ? fact.value : undefined}
+      >
+        {fact.value}
+      </Text>
+    </>
+  );
+}
+
+function RawDump({
+  dump,
+  onCopy,
+  initiallyOpen = false,
+}: {
+  dump: string;
+  onCopy: () => void;
+  initiallyOpen?: boolean;
+}) {
+  const styles = useStyles();
+  const [open, setOpen] = useState(initiallyOpen);
+  return (
+    <>
+      <div className={styles.row}>
+        <Button
+          appearance="subtle"
+          size="small"
+          icon={open ? <ChevronDownRegular /> : <ChevronRightRegular />}
+          className={styles.dumpToggle}
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          Raw JSON
+        </Button>
+        <Tooltip content="Copy to clipboard" relationship="label">
+          <Button size="small" appearance="subtle" icon={<CopyRegular />} onClick={onCopy}>
+            Copy
+          </Button>
+        </Tooltip>
+      </div>
+      {open && (
+        <div className={styles.block}>
+          <pre className={styles.pre}>{dump}</pre>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
+
+interface Fact {
+  key: string;
+  label: string;
+  value: string;
+  mono?: boolean;
+  tone?: "ok" | "bad";
+}
+
+function collectFacts(
+  error: BackendError | Error | null,
+  debug: Record<string, unknown> | null,
+): Fact[] {
+  const out: Fact[] = [];
+  const seen = new Set<string>();
+  const push = (key: string, label: string, value: unknown, opts: Partial<Fact> = {}) => {
+    if (value == null || value === "" || seen.has(key)) return;
+    out.push({ key, label, value: String(value), ...opts });
+    seen.add(key);
+  };
+
+  if (isBackendError(error)) {
+    push("endpoint", "Endpoint", error.endpoint, { mono: true });
+    if (typeof error.status === "number") {
+      push("status", "HTTP", error.status, {
+        tone: error.status >= 400 || error.status === 0 ? "bad" : "ok",
+      });
+    }
+    const req = error.requestBody as Record<string, unknown> | null | undefined;
+    if (req) {
+      push("productInput", "Input", req.ProductInput, { mono: true });
+      push("idType", "Type", req.IdentifierType);
+      push("market", "Market", req.Market);
+      push("tag", "Locale", req.Locale ?? req.Language);
+    }
+  }
+
+  if (debug) {
+    push("productInput", "Input", debug.productInput, { mono: true });
+    push("idType", "Type", debug.idType);
+    push("market", "Market", debug.market);
+    push("tag", "Locale", debug.tag);
+    push("kind", "Error kind", debug.kind);
+    push("handlerError", "Handler error", debug.handlerError);
+  }
+
+  return out;
+}
 
 function buildDump(
   error: BackendError | Error | null,
@@ -377,7 +528,7 @@ function buildDump(
   if (error) {
     parts.error = {
       name: error.name,
-      message: error.message,
+      message: cleanErrorMessage(error.message) ?? error.message,
       ...(isBackendError(error)
         ? {
             status: error.status,
@@ -389,26 +540,35 @@ function buildDump(
     };
   }
   if (warnings.length) parts.warnings = warnings;
-  if (debug) parts.debug = debug;
+  // Drop `debug` from the dump when the same payload is already nested
+  // under `error.response.Debug`. Otherwise the same object appears twice
+  // and bloats the diagnostic bundle.
+  if (debug && !debugMatchesResponse(debug, error)) {
+    parts.debug = debug;
+  }
   return JSON.stringify(parts, null, 2);
 }
 
-// Pull a few high-signal fields out of the debug bag so the collapsed
-// header carries information instead of just the word "Diagnostics".
-function summariseDebug(debug: Record<string, unknown> | null): string | null {
-  if (!debug) return null;
-  const bits: string[] = [];
-  const get = (k: string): string | null => {
-    const v = debug[k];
-    return typeof v === "string" && v ? v : null;
-  };
-  const tag = get("tag");
-  const market = get("market");
-  const idType = get("idType");
-  if (idType) bits.push(idType);
-  if (tag) bits.push(tag);
-  else if (market) bits.push(market);
-  return bits.length ? bits.join(" · ") : null;
+function debugMatchesResponse(
+  debug: Record<string, unknown>,
+  error: BackendError | Error | null,
+): boolean {
+  if (!isBackendError(error)) return false;
+  const respDebug = (error.response as { Debug?: unknown } | null)?.Debug;
+  if (!respDebug || typeof respDebug !== "object") return false;
+  try {
+    return JSON.stringify(respDebug) === JSON.stringify(debug);
+  } catch {
+    return false;
+  }
+}
+
+// Backend errors are sometimes wrapped through several layers and arrive
+// looking like `Product lookup failed: Error: Error: <message>`. Collapse the
+// runs so the user-facing line reads naturally.
+function cleanErrorMessage(msg: string | undefined): string | undefined {
+  if (!msg) return msg;
+  return msg.replace(/(?:\bError:\s*){2,}/g, "");
 }
 
 function isBackendError(e: unknown): e is BackendError {

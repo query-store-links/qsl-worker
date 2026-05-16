@@ -52,12 +52,18 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function bytesToString(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n) || n <= 0) return "Unknown";
+// storelib_rs 0.1.7-fix-1 returns `packageSize` as `bigint` when the value
+// exceeds Number.MAX_SAFE_INTEGER (some DCat manifests carry full u64 sizes).
+// Convert to Number for the log-based bucketing — precision loss at that
+// scale is irrelevant since we only render one decimal place anyway.
+function bytesToString(n: number | bigint | null | undefined): string {
+  if (n == null) return "Unknown";
+  const num = typeof n === "bigint" ? Number(n) : n;
+  if (!Number.isFinite(num) || num <= 0) return "Unknown";
   const suffixes = ["B", "KB", "MB", "GB", "TB", "PB", "EB"] as const;
-  const place = Math.min(Math.floor(Math.log(n) / Math.log(1024)), suffixes.length - 1);
-  const num = Math.round((n / 1024 ** place) * 10) / 10;
-  return `${num}${suffixes[place]}`;
+  const place = Math.min(Math.floor(Math.log(num) / Math.log(1024)), suffixes.length - 1);
+  const rounded = Math.round((num / 1024 ** place) * 10) / 10;
+  return `${rounded}${suffixes[place]}`;
 }
 
 function errKind(e: unknown): StorelibError["kind"] | "unknown" {

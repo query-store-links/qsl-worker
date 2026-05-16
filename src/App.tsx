@@ -264,14 +264,20 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         warnings: respWarnings,
         debug,
       });
-      const mock = mockResults(current.productInput).filter(
-        (it) =>
-          (current.includeAppx || it.type !== "APPX") &&
-          (current.includeNonAppx || it.type === "APPX"),
-      );
-      setResults(mock);
-      setNotice("Showing sample data so you can preview the UI — see Diagnostics above.");
-      pushHistory(current, mock.length);
+      // The mock-data fallback is a dev affordance for previewing the UI
+      // against an unreachable backend. In production it would actively
+      // mislead by showing fake download links next to a real error, so
+      // skip it and just surface the diagnostics.
+      if (import.meta.env.DEV) {
+        const mock = mockResults(current.productInput).filter(
+          (it) =>
+            (current.includeAppx || it.type !== "APPX") &&
+            (current.includeNonAppx || it.type === "APPX"),
+        );
+        setResults(mock);
+        setNotice("Showing sample data so you can preview the UI — see Diagnostics above.");
+        pushHistory(current, mock.length);
+      }
     } finally {
       setLoading(false);
       setProgress(null);
