@@ -32,8 +32,10 @@ import { DebugPanel } from "./components/DebugPanel";
 import { NotFoundPage } from "./components/NotFoundPage";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { useLocalState } from "./hooks";
+import { translateApiCode, useT } from "./i18n";
 import {
   callBackend,
+  CodedClientError,
   fetchBackendMeta,
   fetchMeta,
   mockResults,
@@ -42,7 +44,14 @@ import {
   type ProgressUpdate,
   type WorkerMeta,
 } from "./api";
-import type { AppInfo, IdentifierType, NormalizedItem, Ring, SearchFormData } from "./shared";
+import type {
+  ApiCode,
+  AppInfo,
+  IdentifierType,
+  NormalizedItem,
+  Ring,
+  SearchFormData,
+} from "./shared";
 
 const DEFAULT_FORM: SearchFormData = {
   productInput: "",
@@ -83,8 +92,8 @@ function isOfficialUiHost(): boolean {
 }
 
 interface ErrorState {
-  err: BackendError | Error;
-  warnings: string[];
+  err: BackendError | CodedClientError | Error;
+  warnings: ApiCode[];
   debug: Record<string, unknown> | null;
 }
 
@@ -218,6 +227,7 @@ interface ResolverProps {
 }
 
 function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps) {
+  const t = useT();
   const [settings, setSettings] = useLocalState<AppSettings>("qsl_settings", {
     backend: DEFAULT_BACKEND,
     customMarket: "",
@@ -231,7 +241,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
   const [errorState, setErrorState] = useState<ErrorState | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<ApiCode[]>([]);
   const [debug, setDebug] = useState<Record<string, unknown> | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -288,7 +298,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
           (current.includeNonAppx || it.type === "APPX"),
       );
       if (filtered.length === 0) {
-        throw new Error("No download links returned for this identifier.");
+        throw new CodedClientError([{ code: "client.noDownloadLinks" }]);
       }
       setResults(filtered);
       setAppInfo(result.raw.AppInfo ?? null);
@@ -296,7 +306,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       setDebug(result.debug);
       setBackendHealth("ok");
       pushHistory(current, filtered.length);
-      push("success", `${filtered.length} files resolved`);
+      push("success", t("toast.resolved", { count: filtered.length }));
     } catch (err) {
       if ((err as { name?: string })?.name === "AbortError") {
         setLoading(false);
@@ -304,7 +314,15 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       }
       const backendErr = err as BackendError;
       const debug = backendErr.response?.Debug ?? null;
-      const respWarnings = backendErr.response?.Warnings ?? [];
+      // Same `*Codes`-first / legacy-strings-fallback as `callBackend` uses
+      // for the success path, applied to whatever warnings rode along on the
+      // failed response.
+      const resp = backendErr.response;
+      const respWarnings: ApiCode[] = resp?.WarningCodes?.length
+        ? resp.WarningCodes
+        : resp?.Warnings?.length
+          ? resp.Warnings.map((message) => ({ code: "legacy", params: { message } }))
+          : [];
       // `BackendError` only fires after we received a response, so we know
       // the host is alive even if it errored. A bare Error (no .status) is
       // typically a network failure — mark the backend down so the pill dot
@@ -327,7 +345,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
             (current.includeNonAppx || it.type === "APPX"),
         );
         setResults(mock);
-        setNotice("Showing sample data so you can preview the UI — see Diagnostics above.");
+        setNotice(t("banner.offlinePreview.body"));
         pushHistory(current, mock.length);
       }
     } finally {
@@ -409,18 +427,18 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
     if (!shareUrl) return;
     try {
       await navigator.clipboard.writeText(shareUrl);
-      push("success", "Shareable link copied");
+      push("success", t("toast.shareCopied"));
     } catch {
-      push("error", "Couldn't copy", "Clipboard access denied.");
+      push("error", t("toast.couldntCopy"), t("toast.clipboardDenied"));
     }
   };
 
   const onCopy = async (text: string, what: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      push("success", "Copied", what);
+      push("success", t("toast.copied"), what);
     } catch {
-      push("error", "Couldn't copy");
+      push("error", t("toast.couldntCopy"));
     }
   };
 
@@ -439,15 +457,12 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       <main className={styles.main}>
         <div className={`qsl-fade-up ${styles.hero}`}>
           <Title2 as="h1" block className={styles.heroTitle}>
-            Resolve Microsoft Store{" "}
+            {t("app.hero.titleLead")}{" "}
             <Text as="span" className={styles.heroGradient}>
-              download links
+              {t("app.hero.titleHighlight")}
             </Text>
           </Title2>
-          <Body1 className={styles.heroSub}>
-            Look up direct MSIX, APPX, and bundle URLs for any package on the Microsoft Store.
-            Supports all identifier types — modern and legacy.
-          </Body1>
+          <Body1 className={styles.heroSub}>{t("app.hero.sub")}</Body1>
         </div>
 
         {!isOfficialUiHost() &&
@@ -455,20 +470,14 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
           !unofficialAck.includes(window.location.hostname) && (
             <MessageBar intent="warning" layout="multiline">
               <MessageBarBody>
-                <MessageBarTitle>Unofficial deployment</MessageBarTitle>
-                <Body1 block>
-                  You're using a copy of the Query Store Links UI hosted at{" "}
-                  <Text className="qsl-mono">{window.location.host}</Text>, not the official{" "}
-                  <Text className="qsl-mono">qsl.krnl64.win</Text>. The page you're looking at may
-                  have been modified by whoever runs this host — it can log everything you submit or
-                  rewrite the URLs it shows you. Only proceed if you trust the operator.
-                </Body1>
+                <MessageBarTitle>{t("banner.unofficial.title")}</MessageBarTitle>
+                <Body1 block>{t("banner.unofficial.body", { host: window.location.host })}</Body1>
               </MessageBarBody>
               <MessageBarActions
                 containerAction={
-                  <Tooltip content="I trust this host — don't warn again" relationship="label">
+                  <Tooltip content={t("banner.unofficial.dismiss")} relationship="label">
                     <Button
-                      aria-label="Acknowledge unofficial deployment"
+                      aria-label={t("banner.unofficial.ack")}
                       appearance="transparent"
                       icon={<DismissRegular />}
                       onClick={() =>
@@ -488,15 +497,13 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         {apiDisabled && !settings.backend && (
           <MessageBar intent="error" layout="multiline">
             <MessageBarBody>
-              <MessageBarTitle>Built-in resolver disabled</MessageBarTitle>
+              <MessageBarTitle>{t("banner.apiDisabled.title")}</MessageBarTitle>
               <Body1 block>
-                This deployment's same-origin API is turned off. Open Settings and set{" "}
-                <Text weight="semibold">API Backend</Text> to a third-party QSL endpoint, or host
-                your own. Resolves will fail until you do.
+                {t("banner.apiDisabled.body", { apiBackend: t("topbar.config.backend.label") })}
               </Body1>
               <Body1 block>
-                <Text weight="semibold">Heads-up:</Text> any backend you enter receives every
-                identifier you look up and serves the download URLs back. Only use one you trust.
+                <Text weight="semibold">{t("banner.apiDisabled.heads")}</Text>{" "}
+                {t("banner.apiDisabled.warn")}
               </Body1>
             </MessageBarBody>
           </MessageBar>
@@ -507,20 +514,18 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
           !thirdPartyAck.includes(settings.backend) && (
             <MessageBar intent="warning" layout="multiline">
               <MessageBarBody>
-                <MessageBarTitle>Using a third-party backend</MessageBarTitle>
+                <MessageBarTitle>{t("banner.thirdParty.title")}</MessageBarTitle>
                 <Body1 block>
-                  Queries go to{" "}
-                  <Text className="qsl-mono">{settings.backend.replace(/^https?:\/\//, "")}</Text>.
-                  That host sees every identifier you submit and returns the download URLs you'll
-                  click — a malicious one can log your queries or serve poisoned packages. Only
-                  proceed if you trust the operator.
+                  {t("banner.thirdParty.body", {
+                    host: settings.backend.replace(/^https?:\/\//, ""),
+                  })}
                 </Body1>
               </MessageBarBody>
               <MessageBarActions
                 containerAction={
-                  <Tooltip content="I trust this backend — don't warn again" relationship="label">
+                  <Tooltip content={t("banner.thirdParty.dismiss")} relationship="label">
                     <Button
-                      aria-label="Acknowledge third-party backend"
+                      aria-label={t("banner.thirdParty.ack")}
                       appearance="transparent"
                       icon={<DismissRegular />}
                       onClick={() =>
@@ -559,7 +564,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
 
         {errorState && (
           <DebugPanel
-            title="Resolution failed"
+            title={t("banner.debug.failed")}
             error={errorState.err}
             warnings={errorState.warnings}
             debug={errorState.debug}
@@ -572,19 +577,24 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
           <MessageBar intent="warning">
             <MessageBarBody>
               <MessageBarTitle>
-                {warnings.length} note{warnings.length === 1 ? "" : "s"} from the worker
+                {t(
+                  warnings.length === 1
+                    ? "banner.workerNotes.title"
+                    : "banner.workerNotes.title.plural",
+                  { count: warnings.length },
+                )}
               </MessageBarTitle>
               {warnings.map((w, i) => (
                 <Body1 key={i} block>
-                  {w}
+                  {translateApiCode(t, w)}
                 </Body1>
               ))}
             </MessageBarBody>
             <MessageBarActions
               containerAction={
-                <Tooltip content="Dismiss" relationship="label">
+                <Tooltip content={t("common.dismiss")} relationship="label">
                   <Button
-                    aria-label="Dismiss"
+                    aria-label={t("common.dismiss")}
                     appearance="transparent"
                     icon={<DismissRegular />}
                     onClick={() => setWarnings([])}
@@ -598,14 +608,14 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         {notice && (
           <MessageBar intent="warning">
             <MessageBarBody>
-              <MessageBarTitle>Offline preview</MessageBarTitle>
+              <MessageBarTitle>{t("banner.offlinePreview.title")}</MessageBarTitle>
               {notice}
             </MessageBarBody>
             <MessageBarActions
               containerAction={
-                <Tooltip content="Dismiss" relationship="label">
+                <Tooltip content={t("common.dismiss")} relationship="label">
                   <Button
-                    aria-label="Dismiss"
+                    aria-label={t("common.dismiss")}
                     appearance="transparent"
                     icon={<DismissRegular />}
                     onClick={() => setNotice(null)}
@@ -619,7 +629,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         {debug && !errorState && (
           <DebugPanel
             intent="info"
-            title="Resolved"
+            title={t("banner.debug.resolved")}
             error={null}
             warnings={[]}
             debug={debug}
@@ -641,7 +651,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
 
         <footer className={styles.footer}>
           <Text size={200}>
-            Query Store Links · MSIX bundle resolver
+            {t("app.brand")} · {t("app.tagline")}
             {(() => {
               const host = settings.backend
                 ? (() => {
@@ -654,11 +664,13 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
                 : typeof window !== "undefined"
                   ? window.location.host
                   : "same-origin";
-              const ver = backendMeta?.version ? `v${backendMeta.version}` : "unknown version";
+              const ver = backendMeta?.version
+                ? `v${backendMeta.version}`
+                : t("app.footer.versionUnknown");
               const slibPart = backendMeta?.storelibVersion
-                ? ` with storelib v${backendMeta.storelibVersion}`
+                ? t("app.footer.storelib", { version: backendMeta.storelibVersion })
                 : "";
-              return ` · Via ${host} (${ver}${slibPart})`;
+              return ` · ${t("app.footer.via", { host, version: ver, storelib: slibPart })}`;
             })()}
           </Text>
           <Text size={200}>
@@ -667,9 +679,9 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
               target="_blank"
               rel="noreferrer"
             >
-              GitHub
+              {t("app.footer.github")}
             </Link>{" "}
-            · © 2026 QSL
+            · {t("app.footer.copy")}
           </Text>
         </footer>
       </main>

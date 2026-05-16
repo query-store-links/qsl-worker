@@ -38,6 +38,7 @@ import {
   WindowConsoleRegular,
 } from "@fluentui/react-icons";
 import { formatBytes, type AppInfo, type NormalizedItem, type PackageType } from "../shared";
+import { useT, type TFn } from "../i18n";
 
 type FilterKey = "all" | PackageType;
 type SortKey = "name" | "size" | "type" | "arch";
@@ -239,6 +240,7 @@ const useStyles = makeStyles({
 
 export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProps) {
   const styles = useStyles();
+  const t = useT();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -312,7 +314,12 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
       .map((r) => r.url)
       .join("\n");
     if (!urls) return;
-    onCopy(urls, `${selected.size} URL${selected.size === 1 ? "" : "s"}`);
+    onCopy(
+      urls,
+      t(selected.size === 1 ? "results.copy.urls" : "results.copy.urls.plural", {
+        count: selected.size,
+      }),
+    );
   };
   const downloadSelected = () => {
     filtered
@@ -332,10 +339,10 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
   };
 
   const tabs: { v: FilterKey; l: string }[] = [
-    { v: "all", l: "All" },
-    { v: "APPX", l: "APPX" },
-    { v: "Other", l: "Other" },
-    { v: "BlockMap", l: "BlockMap" },
+    { v: "all", l: t("results.tab.all") },
+    { v: "APPX", l: t("results.tab.appx") },
+    { v: "Other", l: t("results.tab.other") },
+    { v: "BlockMap", l: t("results.tab.blockMap") },
   ];
 
   return (
@@ -344,10 +351,12 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
         <div className={styles.headLeft}>
           <div className={styles.headTitle}>
             <Body1Strong>
-              {results.length} file{results.length === 1 ? "" : "s"}
+              {t(results.length === 1 ? "results.fileCount" : "results.fileCount.plural", {
+                count: results.length,
+              })}
             </Body1Strong>
             <Caption1>·</Caption1>
-            <Caption1>{formatBytes(totalBytes)} total</Caption1>
+            <Caption1>{t("results.totalSize", { size: formatBytes(totalBytes) })}</Caption1>
           </div>
           {query && (
             <Text className={`qsl-mono ${styles.query}`} title={query}>
@@ -356,16 +365,16 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
           )}
           {appInfo?.CategoryId && (
             <Tooltip
-              content={`WU Category ID · click to copy · ${appInfo.CategoryId}`}
+              content={t("results.category.tooltip", { id: appInfo.CategoryId })}
               relationship="label"
             >
               <button
                 type="button"
                 className={`qsl-mono ${styles.metaChip}`}
-                onClick={() => onCopy(appInfo.CategoryId!, "Category ID")}
-                aria-label="Copy Category ID"
+                onClick={() => onCopy(appInfo.CategoryId!, t("results.category.copy"))}
+                aria-label={t("results.category.copy")}
               >
-                <span className={styles.metaLabel}>Category</span>
+                <span className={styles.metaLabel}>{t("results.category.label")}</span>
                 <span>{appInfo.CategoryId}</span>
                 <CopyRegular fontSize={11} />
               </button>
@@ -375,7 +384,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
         <div className={styles.filterInputWrap}>
           <Input
             size="small"
-            placeholder="Filter file names"
+            placeholder={t("results.filter.placeholder")}
             value={search}
             onChange={(_, d) => setSearch(d.value)}
             contentBefore={<FilterRegular />}
@@ -385,7 +394,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
                   size="small"
                   appearance="transparent"
                   icon={<DismissRegular />}
-                  aria-label="Clear"
+                  aria-label={t("search.identifier.clear")}
                   onClick={() => setSearch("")}
                 />
               ) : null
@@ -423,11 +432,14 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
       {selected.size > 0 && (
         <div className={styles.bulkBar}>
           <Text className={styles.bulkLeft}>
-            {selected.size} selected · {formatBytes(selBytes)}
+            {t("results.bulk.selected", {
+              count: selected.size,
+              size: formatBytes(selBytes),
+            })}
           </Text>
           <div className={styles.bulkRight}>
             <Button appearance="subtle" size="small" icon={<CopyRegular />} onClick={copySelected}>
-              Copy URLs
+              {t("results.bulk.copyUrls")}
             </Button>
             <Button
               appearance="primary"
@@ -435,45 +447,49 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
               icon={<ArrowDownloadRegular />}
               onClick={downloadSelected}
             >
-              Download all
+              {t("results.bulk.downloadAll")}
             </Button>
             <Button appearance="subtle" size="small" onClick={() => setSelected(new Set())}>
-              Clear
+              {t("results.bulk.clear")}
             </Button>
           </div>
         </div>
       )}
 
       <div className={styles.tableWrap}>
-        <Table size="small" aria-label="Resolved packages">
+        <Table size="small" aria-label={t("results.table.aria")}>
           <TableHeader>
             <TableRow>
               <TableHeaderCell
                 className={mergeClasses(styles.ckShellLeft, styles.stickyHeaderCell)}
                 style={{ width: 56 }}
               >
-                <Checkbox checked={allSelected} onChange={toggleAll} aria-label="Select all" />
+                <Checkbox
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  aria-label={t("results.table.selectAll")}
+                />
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("name")}
                 className={styles.stickyHeaderCell}
                 style={{ minWidth: 280 }}
               >
-                File name
+                {t("results.table.fileName")}
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("type")}
                 className={styles.stickyHeaderCell}
                 style={{ width: 110 }}
               >
-                Type
+                {t("results.table.type")}
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("arch")}
                 className={styles.stickyHeaderCell}
                 style={{ width: 90 }}
               >
-                Arch
+                {t("results.table.arch")}
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("size")}
@@ -481,7 +497,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
                 style={{ width: 110 }}
               >
                 <Text className={styles.numCell} block>
-                  Size
+                  {t("results.table.size")}
                 </Text>
               </TableHeaderCell>
               <TableHeaderCell
@@ -489,7 +505,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
                 style={{ width: 130 }}
               >
                 <Text className={styles.actionsCell} block>
-                  Actions
+                  {t("results.table.actions")}
                 </Text>
               </TableHeaderCell>
             </TableRow>
@@ -499,7 +515,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
               <TableRow>
                 <TableCell colSpan={6}>
                   <Text className={styles.empty} block>
-                    No files match this filter.
+                    {t("results.empty")}
                   </Text>
                 </TableCell>
               </TableRow>
@@ -518,6 +534,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
                     })
                   }
                   onCopy={onCopy}
+                  t={t}
                 />
               ))
             )}
@@ -533,11 +550,13 @@ function ResultRow({
   selected,
   onToggle,
   onCopy,
+  t,
 }: {
   item: NormalizedItem;
   selected: boolean;
   onToggle: () => void;
   onCopy: (text: string, what: string) => void;
+  t: TFn;
 }) {
   const styles = useStyles();
   const badgeColor: "brand" | "warning" | "informative" =
@@ -546,7 +565,11 @@ function ResultRow({
   return (
     <TableRow className={selected ? styles.rowSelected : undefined}>
       <TableCell className={styles.ckShellLeft}>
-        <Checkbox checked={selected} onChange={onToggle} aria-label={`Select ${item.name}`} />
+        <Checkbox
+          checked={selected}
+          onChange={onToggle}
+          aria-label={t("results.table.selectOne", { name: item.name })}
+        />
       </TableCell>
       <TableCell style={{ minWidth: 0 }}>
         <TableCellLayout
@@ -561,25 +584,28 @@ function ResultRow({
             </Text>
             {item.sha256 && (
               <div className={styles.hashLine}>
-                <Tooltip content={`Click to copy · ${item.sha256}`} relationship="label">
+                <Tooltip
+                  content={t("results.hash.tooltip", { hash: item.sha256 })}
+                  relationship="label"
+                >
                   <button
                     type="button"
                     className={`qsl-mono ${styles.hashRow}`}
-                    onClick={() => onCopy(item.sha256!, "SHA-256")}
-                    aria-label="Copy SHA-256"
+                    onClick={() => onCopy(item.sha256!, t("results.hash.copyLabel"))}
+                    aria-label={t("results.hash.copyAria")}
                   >
-                    <span className={styles.hashLabel}>SHA-256</span>
+                    <span className={styles.hashLabel}>{t("results.hash.copyLabel")}</span>
                     <span>{item.sha256.slice(0, 16)}…</span>
                     <CopyRegular fontSize={11} />
                   </button>
                 </Tooltip>
                 <Menu positioning="below-start">
                   <MenuTrigger disableButtonEnhancement>
-                    <Tooltip content="Copy verify-hash command" relationship="label">
+                    <Tooltip content={t("results.hash.verifyTooltip")} relationship="label">
                       <button
                         type="button"
                         className={styles.verifyBtn}
-                        aria-label="Copy verify-hash command"
+                        aria-label={t("results.hash.verifyAria")}
                       >
                         <WindowConsoleRegular fontSize={12} />
                       </button>
@@ -591,31 +617,31 @@ function ResultRow({
                         onClick={() =>
                           onCopy(
                             buildVerifyCommand("powershell", item.name, item.sha256!),
-                            "PowerShell verify command",
+                            t("results.hash.shell.powershellLabel"),
                           )
                         }
                       >
-                        PowerShell
+                        {t("results.hash.shell.powershell")}
                       </MenuItem>
                       <MenuItem
                         onClick={() =>
                           onCopy(
                             buildVerifyCommand("cmd", item.name, item.sha256!),
-                            "cmd.exe verify command",
+                            t("results.hash.shell.cmdLabel"),
                           )
                         }
                       >
-                        Command Prompt
+                        {t("results.hash.shell.cmd")}
                       </MenuItem>
                       <MenuItem
                         onClick={() =>
                           onCopy(
                             buildVerifyCommand("bash", item.name, item.sha256!),
-                            "Bash verify command",
+                            t("results.hash.shell.bashLabel"),
                           )
                         }
                       >
-                        Bash (Linux / macOS)
+                        {t("results.hash.shell.bash")}
                       </MenuItem>
                     </MenuList>
                   </MenuPopover>
@@ -640,21 +666,21 @@ function ResultRow({
       </TableCell>
       <TableCell className={styles.ckShellRight}>
         <span className={styles.actionGroup}>
-          <Tooltip content="Copy URL" relationship="label">
+          <Tooltip content={t("results.row.copyUrl")} relationship="label">
             <Button
               appearance="subtle"
               size="small"
               icon={<CopyRegular />}
-              aria-label="Copy URL"
+              aria-label={t("results.row.copyUrl")}
               onClick={() => onCopy(item.url, item.name)}
             />
           </Tooltip>
-          <Tooltip content="Download" relationship="label">
+          <Tooltip content={t("results.row.download")} relationship="label">
             <Button
               appearance="subtle"
               size="small"
               icon={<ArrowDownloadRegular />}
-              aria-label="Download"
+              aria-label={t("results.row.download")}
               onClick={() => {
                 const a = document.createElement("a");
                 a.href = item.url;
@@ -667,12 +693,12 @@ function ResultRow({
               }}
             />
           </Tooltip>
-          <Tooltip content="Open in new tab" relationship="label">
+          <Tooltip content={t("results.row.open")} relationship="label">
             <Button
               appearance="subtle"
               size="small"
               icon={<OpenRegular />}
-              aria-label="Open"
+              aria-label={t("results.row.open")}
               onClick={() => window.open(item.url, "_blank")}
             />
           </Tooltip>

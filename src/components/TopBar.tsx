@@ -2,8 +2,15 @@ import { useEffect, useState } from "react";
 import {
   Button,
   Divider,
+  Dropdown,
   Field,
   Input,
+  Menu,
+  MenuItemRadio,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
+  Option,
   Popover,
   PopoverSurface,
   PopoverTrigger,
@@ -15,12 +22,14 @@ import {
 } from "@fluentui/react-components";
 import {
   HistoryRegular,
+  LocalLanguageRegular,
   SettingsRegular,
   WeatherMoonRegular,
   WeatherSunnyRegular,
   LinkRegular,
   GlobeRegular,
 } from "@fluentui/react-icons";
+import { SUPPORTED_LANGS, useI18n } from "../i18n";
 
 export interface AppSettings {
   backend: string;
@@ -196,6 +205,7 @@ export function TopBar({
   backendHealth,
 }: TopBarProps) {
   const styles = useStyles();
+  const { lang, setLang, t } = useI18n();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<AppSettings>(settings);
 
@@ -211,31 +221,29 @@ export function TopBar({
 
   const backendLabel = settings.backend ? settings.backend.replace(/^https?:\/\//, "") : null;
 
+  const backendTooltip =
+    backendHealth === "down"
+      ? t("topbar.backend.down")
+      : backendHealth === "checking"
+        ? t("topbar.backend.checking")
+        : backendHealth === "ok"
+          ? t("topbar.backend.ok")
+          : t("topbar.backend.unknown");
+
   return (
     <header className={styles.header}>
       <div className={styles.inner}>
         <div className={styles.brand}>
           <img src="/favicon.svg" alt="" aria-hidden className={styles.logo} />
           <div className={styles.brandText}>
-            <Text className={styles.brandTitle}>Query Store Links</Text>
-            <Text className={styles.brandSub}>MSIX bundle resolver</Text>
+            <Text className={styles.brandTitle}>{t("app.brand")}</Text>
+            <Text className={styles.brandSub}>{t("app.tagline")}</Text>
           </div>
         </div>
 
         <div className={styles.spacer} />
 
-        <Tooltip
-          content={
-            backendHealth === "down"
-              ? "Backend unreachable · click to configure"
-              : backendHealth === "checking"
-                ? "Checking backend…"
-                : backendHealth === "ok"
-                  ? "Backend reachable · click to configure"
-                  : "Backend · click to configure"
-          }
-          relationship="label"
-        >
+        <Tooltip content={backendTooltip} relationship="label">
           <button type="button" className={styles.pill} onClick={() => setOpen(true)}>
             <span
               className={mergeClasses(
@@ -250,12 +258,12 @@ export function TopBar({
         </Tooltip>
 
         <div className={styles.historyWrap}>
-          <Tooltip content="Recent searches" relationship="label">
+          <Tooltip content={t("topbar.history")} relationship="label">
             <Button
               appearance="subtle"
               icon={<HistoryRegular />}
               onClick={onOpenHistory}
-              aria-label="Recent searches"
+              aria-label={t("topbar.history")}
             />
           </Tooltip>
           {historyCount > 0 && (
@@ -263,12 +271,42 @@ export function TopBar({
           )}
         </div>
 
-        <Tooltip content={isDark ? "Switch to light" : "Switch to dark"} relationship="label">
+        <Menu
+          checkedValues={{ lang: [lang] }}
+          onCheckedValueChange={(_, d) => {
+            const v = d.checkedItems[0];
+            if (v === "en" || v === "zh") setLang(v);
+          }}
+        >
+          <MenuTrigger disableButtonEnhancement>
+            <Tooltip content={t("topbar.lang.tooltip")} relationship="label">
+              <Button
+                appearance="subtle"
+                icon={<LocalLanguageRegular />}
+                aria-label={t("topbar.lang.tooltip")}
+              />
+            </Tooltip>
+          </MenuTrigger>
+          <MenuPopover>
+            <MenuList>
+              {SUPPORTED_LANGS.map((l) => (
+                <MenuItemRadio key={l.value} name="lang" value={l.value}>
+                  {l.nativeLabel}
+                </MenuItemRadio>
+              ))}
+            </MenuList>
+          </MenuPopover>
+        </Menu>
+
+        <Tooltip
+          content={isDark ? t("topbar.theme.toLight") : t("topbar.theme.toDark")}
+          relationship="label"
+        >
           <Button
             appearance="subtle"
             icon={isDark ? <WeatherSunnyRegular /> : <WeatherMoonRegular />}
             onClick={() => setIsDark(!isDark)}
-            aria-label="Toggle theme"
+            aria-label={t("topbar.theme.toggle")}
           />
         </Tooltip>
 
@@ -279,17 +317,21 @@ export function TopBar({
           trapFocus
         >
           <PopoverTrigger disableButtonEnhancement>
-            <Tooltip content="Configuration" relationship="label">
-              <Button appearance="subtle" icon={<SettingsRegular />} aria-label="Settings" />
+            <Tooltip content={t("topbar.config.title")} relationship="label">
+              <Button
+                appearance="subtle"
+                icon={<SettingsRegular />}
+                aria-label={t("topbar.settings")}
+              />
             </Tooltip>
           </PopoverTrigger>
           <PopoverSurface className={styles.popover}>
             <div className={styles.popoverInner}>
-              <div className={styles.popoverHeader}>Configuration</div>
+              <div className={styles.popoverHeader}>{t("topbar.config.title")}</div>
 
               <Field
-                label="API Backend"
-                hint="The QSL backend that resolves identifiers to download URLs. Leave empty to use the same-origin worker."
+                label={t("topbar.config.backend.label")}
+                hint={t("topbar.config.backend.hint")}
               >
                 <Input
                   contentBefore={<LinkRegular />}
@@ -300,7 +342,7 @@ export function TopBar({
               </Field>
 
               <div className={styles.twoCol}>
-                <Field label="Market override" className={styles.fieldFill}>
+                <Field label={t("topbar.config.market.label")} className={styles.fieldFill}>
                   <Input
                     className={styles.inputFill}
                     contentBefore={<GlobeRegular />}
@@ -308,10 +350,10 @@ export function TopBar({
                     onChange={(_, d) =>
                       setDraft({ ...draft, customMarket: d.value.toUpperCase().slice(0, 2) })
                     }
-                    placeholder="auto"
+                    placeholder={t("topbar.config.market.placeholder")}
                   />
                 </Field>
-                <Field label="Locale" className={styles.fieldFill}>
+                <Field label={t("topbar.config.locale.label")} className={styles.fieldFill}>
                   <Input
                     className={styles.inputFill}
                     value={draft.locale}
@@ -321,14 +363,30 @@ export function TopBar({
                 </Field>
               </div>
 
+              <Field label={t("topbar.config.lang.label")}>
+                <Dropdown
+                  value={SUPPORTED_LANGS.find((l) => l.value === lang)?.nativeLabel ?? lang}
+                  selectedOptions={[lang]}
+                  onOptionSelect={(_, d) => {
+                    if (d.optionValue === "en" || d.optionValue === "zh") setLang(d.optionValue);
+                  }}
+                >
+                  {SUPPORTED_LANGS.map((l) => (
+                    <Option key={l.value} value={l.value} text={l.nativeLabel}>
+                      {l.nativeLabel}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
+
               <Divider />
 
               <div className={styles.footer}>
                 <Button appearance="subtle" onClick={reset}>
-                  Reset
+                  {t("common.reset")}
                 </Button>
                 <Button appearance="primary" onClick={apply}>
-                  Apply
+                  {t("common.apply")}
                 </Button>
               </div>
             </div>

@@ -39,6 +39,7 @@ import {
   type Ring,
   type SearchFormData,
 } from "../shared";
+import { useT } from "../i18n";
 
 interface SearchCardProps {
   form: SearchFormData;
@@ -203,6 +204,7 @@ export function SearchCard({
   onCopyShare,
 }: SearchCardProps) {
   const styles = useStyles();
+  const t = useT();
   const inputRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof SearchFormData>(k: K, v: SearchFormData[K]) =>
     setForm((p) => ({ ...p, [k]: v }));
@@ -212,6 +214,12 @@ export function SearchCard({
   const detectionMismatch = detected != null && detected !== form.identifierType;
   const meta = ID_TYPE_BY_VALUE[form.identifierType];
   const validates = !!form.productInput && meta.pattern.test(form.productInput.trim());
+  const idTypeLabel = (value: string) => t(`idType.${value}.label`);
+  const idTypeShort = (value: string) => t(`idType.${value}.short`);
+  const idTypeHint = (value: string) => t(`idType.${value}.hint`);
+  const ringLabel = (value: string) => t(`ring.${value}.label`);
+  const ringSub = (value: string) => t(`ring.${value}.sub`);
+  const marketLabel = (value: string) => t(`market.${value}`);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -233,13 +241,11 @@ export function SearchCard({
       <div className={styles.headerRow}>
         <div className={styles.headerLeft}>
           <Label htmlFor="qsl-input" size="large" required>
-            Identifier
+            {t("search.identifier.label")}
           </Label>
-          <Caption1 className={styles.headerHint}>
-            Paste a Product ID, Package Family Name, Xbox Title ID, or apps.microsoft.com URL.
-          </Caption1>
+          <Caption1 className={styles.headerHint}>{t("search.identifier.hint")}</Caption1>
         </div>
-        <Tooltip content="Focus: Ctrl+K" relationship="label">
+        <Tooltip content={t("search.identifier.kbd")} relationship="label">
           <Text as="span" className={styles.kbd}>
             <KeyboardRegular fontSize={12} />{" "}
             <Text as="span" className="qsl-mono">
@@ -267,7 +273,7 @@ export function SearchCard({
                 size="small"
                 appearance="transparent"
                 icon={<DismissRegular />}
-                aria-label="Clear"
+                aria-label={t("search.identifier.clear")}
                 onClick={() => set("productInput", "")}
               />
             ) : null
@@ -283,23 +289,23 @@ export function SearchCard({
                   style={{ color: tokens.colorPaletteGreenForeground1 }}
                 />
                 <Body1Strong style={{ color: tokens.colorPaletteGreenForeground1 }}>
-                  Detected:
+                  {t("search.detect.detected")}
                 </Body1Strong>
-                <Body1>{meta.label}</Body1>
+                <Body1>{idTypeLabel(meta.value)}</Body1>
               </>
             ) : detectionMismatch ? (
               <>
                 <InfoRegular fontSize={14} style={{ color: tokens.colorBrandForeground1 }} />
-                <Body1>Looks like a</Body1>
+                <Body1>{t("search.detect.looksLike")}</Body1>
                 <Button
                   appearance="primary"
                   size="small"
                   className={styles.detectionLink}
                   onClick={() => set("identifierType", detected!)}
                 >
-                  {ID_TYPE_BY_VALUE[detected!].label}
+                  {idTypeLabel(detected!)}
                 </Button>
-                <Caption1>— switch?</Caption1>
+                <Caption1>{t("search.detect.switch")}</Caption1>
               </>
             ) : validates ? (
               <>
@@ -307,7 +313,9 @@ export function SearchCard({
                   fontSize={14}
                   style={{ color: tokens.colorPaletteGreenForeground1 }}
                 />
-                <Caption1>Matches {meta.label} format.</Caption1>
+                <Caption1>
+                  {t("search.detect.matches", { label: idTypeLabel(meta.value) })}
+                </Caption1>
               </>
             ) : (
               <>
@@ -316,7 +324,7 @@ export function SearchCard({
                   style={{ color: tokens.colorPaletteDarkOrangeForeground1 }}
                 />
                 <Caption1>
-                  Doesn&apos;t match {meta.label} — try a different type or fix the value.
+                  {t("search.detect.mismatch", { label: idTypeLabel(meta.value) })}
                 </Caption1>
               </>
             )
@@ -325,7 +333,7 @@ export function SearchCard({
               <Text as="span" className="qsl-mono">
                 {meta.example}
               </Text>{" "}
-              · {meta.hint}
+              · {idTypeHint(meta.value)}
             </Caption1>
           )}
         </div>
@@ -333,22 +341,22 @@ export function SearchCard({
 
       <div className={styles.pickerWrap}>
         <Label size="small" className={styles.pickerLabel}>
-          Identifier type
+          {t("search.identifierType")}
         </Label>
         <div className={styles.pickerRow}>
-          {ID_TYPES.map((t) => {
-            const active = t.value === form.identifierType;
+          {ID_TYPES.map((idt) => {
+            const active = idt.value === form.identifierType;
             return (
               <button
-                key={t.value}
+                key={idt.value}
                 type="button"
-                onClick={() => set("identifierType", t.value)}
-                title={t.hint}
+                onClick={() => set("identifierType", idt.value)}
+                title={idTypeHint(idt.value)}
                 className={mergeClasses(styles.pillBase, active && styles.pillActive)}
               >
-                {t.group === "legacy" && <ShieldRegular fontSize={12} />}
-                {t.short}
-                {detected === t.value && form.productInput && !active && (
+                {idt.group === "legacy" && <ShieldRegular fontSize={12} />}
+                {idTypeShort(idt.value)}
+                {detected === idt.value && form.productInput && !active && (
                   <span className={styles.detectDot} aria-hidden />
                 )}
               </button>
@@ -358,35 +366,41 @@ export function SearchCard({
       </div>
 
       <div className={styles.filtersGrid}>
-        <Field label="Ring" className={styles.filtersCell}>
+        <Field label={t("search.field.ring")} className={styles.filtersCell}>
           <Dropdown
             className={styles.fullWidthDropdown}
-            value={RINGS.find((r) => r.value === form.ring)?.label ?? form.ring}
+            value={ringLabel(form.ring)}
             selectedOptions={[form.ring]}
             onOptionSelect={(_, d) => d.optionValue && set("ring", d.optionValue as Ring)}
           >
-            {RINGS.map((r) => (
-              <Option key={r.value} value={r.value} text={`${r.label} — ${r.sub}`}>
-                {r.label} — {r.sub}
-              </Option>
-            ))}
+            {RINGS.map((r) => {
+              const optText = `${ringLabel(r.value)} — ${ringSub(r.value)}`;
+              return (
+                <Option key={r.value} value={r.value} text={optText}>
+                  {optText}
+                </Option>
+              );
+            })}
           </Dropdown>
         </Field>
-        <Field label="Market" className={styles.filtersCell}>
+        <Field label={t("search.field.market")} className={styles.filtersCell}>
           <Dropdown
             className={styles.fullWidthDropdown}
-            value={MARKETS.find((m) => m.value === form.market)?.label ?? form.market}
+            value={marketLabel(form.market)}
             selectedOptions={[form.market]}
             onOptionSelect={(_, d) => d.optionValue && set("market", d.optionValue)}
           >
-            {MARKETS.map((m) => (
-              <Option key={m.value} value={m.value} text={`${m.label} (${m.value})`}>
-                {m.label} ({m.value})
-              </Option>
-            ))}
+            {MARKETS.map((m) => {
+              const optText = `${marketLabel(m.value)} (${m.value})`;
+              return (
+                <Option key={m.value} value={m.value} text={optText}>
+                  {optText}
+                </Option>
+              );
+            })}
           </Dropdown>
         </Field>
-        <Field label="Locale" className={styles.filtersCell}>
+        <Field label={t("search.field.locale")} className={styles.filtersCell}>
           <Dropdown
             className={styles.fullWidthDropdown}
             value={form.locale}
@@ -400,17 +414,17 @@ export function SearchCard({
             ))}
           </Dropdown>
         </Field>
-        <Field label="Package types" className={styles.filtersCell}>
+        <Field label={t("search.field.packageTypes")} className={styles.filtersCell}>
           <div className={styles.pkgRow}>
             <Checkbox
               checked={form.includeAppx}
               onChange={(_, d) => set("includeAppx", !!d.checked)}
-              label="APPX"
+              label={t("search.checkbox.appx")}
             />
             <Checkbox
               checked={form.includeNonAppx}
               onChange={(_, d) => set("includeNonAppx", !!d.checked)}
-              label="Other"
+              label={t("search.checkbox.other")}
             />
           </div>
         </Field>
@@ -426,25 +440,30 @@ export function SearchCard({
           />
           {loading ? (
             <Text as="span">
-              Querying <Body1Strong>{form.ring}</Body1Strong> on{" "}
-              <Body1Strong>{form.market}</Body1Strong>…
+              {t("search.status.querying", {
+                ring: ringLabel(form.ring),
+                market: marketLabel(form.market),
+              })}
             </Text>
           ) : (
             <Text as="span">
-              Ready to fetch from <Body1Strong>{form.ring}</Body1Strong> ·{" "}
-              <Body1Strong>{form.market}</Body1Strong> · <Body1Strong>{form.locale}</Body1Strong>
+              {t("search.status.ready", {
+                ring: ringLabel(form.ring),
+                market: marketLabel(form.market),
+                locale: form.locale,
+              })}
             </Text>
           )}
         </div>
         <div className={styles.buttonGroup}>
           {loading && (
             <Button appearance="subtle" onClick={onAbort}>
-              Cancel
+              {t("common.cancel")}
             </Button>
           )}
           <Tooltip
             content={
-              shareUrl ? "Copy a shareable URL with these params" : "Enter an identifier first"
+              shareUrl ? t("search.action.share.tooltip") : t("search.action.share.disabled")
             }
             relationship="label"
           >
@@ -454,7 +473,7 @@ export function SearchCard({
               onClick={onCopyShare}
               disabled={!shareUrl}
             >
-              Share
+              {t("search.action.share")}
             </Button>
           </Tooltip>
           <Button
@@ -464,7 +483,7 @@ export function SearchCard({
             disabled={loading || !form.productInput || (!form.includeAppx && !form.includeNonAppx)}
             onClick={onResolve}
           >
-            {loading ? "Resolving" : "Resolve links"}
+            {loading ? t("search.action.resolving") : t("search.action.resolve")}
           </Button>
         </div>
       </div>

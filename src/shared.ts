@@ -41,18 +41,77 @@ export interface DownloadItem {
   Sha256?: string | null;
 }
 
+/** Structured, localizable message emitted by the worker. The frontend
+ *  resolves `code` against its i18n dictionary and interpolates `params`. */
+export interface ApiCode {
+  code: string;
+  params?: Record<string, string | number> | null;
+}
+
 export interface ResolveAllResponse {
   ProductId?: string;
   AppInfo?: AppInfo;
   AppxPackages?: DownloadItem[] | null;
   NonAppxPackages?: DownloadItem[] | null;
+  /** Legacy: English-rendered error strings. Kept so non-localizing API
+   *  consumers (curl, scripts, older clients) keep working unchanged. New
+   *  consumers should prefer {@link ErrorCodes} so they can localize. */
   Errors?: string[] | null;
-  /** Non-fatal validator hints (unknown locale → fell back, etc). */
+  /** Structured error codes — the same payload as {@link Errors}, but
+   *  preserved as `{ code, params }` so the frontend can translate them. */
+  ErrorCodes?: ApiCode[] | null;
+  /** Legacy: English-rendered, non-fatal validator hints. */
   Warnings?: string[] | null;
+  /** Structured warnings — localizable form of {@link Warnings}. */
+  WarningCodes?: ApiCode[] | null;
   /** Diagnostic info — request shape, parser output, store handler state. */
   Debug?: Record<string, unknown> | null;
   /** HTTP status when the worker returns an error. */
   Code?: number | null;
+}
+
+// ── Server-side English message templates ─────────────────────────────────
+// The worker renders these to populate the legacy `Errors`/`Warnings` string
+// arrays. The frontend's i18n module merges this same dict into its English
+// translations so there's one source of truth.
+
+export const API_CODE_MESSAGES_EN: Record<string, string> = {
+  "product.notFound": "Product not found.",
+  "product.lookupFailed": "Product lookup failed: {detail}",
+  "packages.fetchFailed": "Failed to fetch packages: {detail}",
+  "nonAppx.notFound": "Non-Appx product not found.",
+  "method.notAllowed": "Method not allowed. POST a JSON body.",
+  "request.invalidJson": "Could not parse request body as JSON: {detail}",
+  "productInput.required": "ProductInput is required.",
+  "internal.error": "Internal error: {detail}",
+  apiDisabled:
+    "This deployment's built-in resolver is disabled. Configure a third-party API Backend in Settings to use this UI.",
+  "route.notFound": "No such API route: {path}",
+  "locale.unknownMarket": 'Unknown market "{raw}", defaulting to "{fallback}". ({detail})',
+  "locale.unknownLanguageTag": 'Unknown language tag "{raw}". ({detail})',
+  "locale.unknownLanguage": 'Unknown language "{raw}". ({detail})',
+  "locale.tagFailed": 'Locale.fromTag("{tag}") failed: {detail} — falling back to en-US.',
+  "client.noDownloadLinks": "No download links returned for this identifier.",
+  "client.httpError": "Backend returned HTTP {status}",
+  "client.emptyBody": "Backend returned an empty body.",
+  // Fallback used when a frontend reads an older worker that only emits the
+  // legacy `Errors: string[]`. The message itself is the param.
+  legacy: "{message}",
+};
+
+/** Render an {@link ApiCode} against a template dictionary. Defaults to the
+ *  shared English templates — the worker uses this to fill the legacy
+ *  `Errors`/`Warnings` string fields. */
+export function renderApiCode(
+  c: ApiCode,
+  dict: Record<string, string> = API_CODE_MESSAGES_EN,
+): string {
+  const template = dict[c.code] ?? c.code;
+  if (!c.params) return template;
+  return template.replace(/\{(\w+)\}/g, (_, k: string) => {
+    const v = c.params![k];
+    return v == null ? `{${k}}` : String(v);
+  });
 }
 
 // ── UI-only types / metadata ──────────────────────────────────────────

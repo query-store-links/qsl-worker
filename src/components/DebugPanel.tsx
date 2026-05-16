@@ -29,12 +29,14 @@ import {
   ErrorCircleRegular,
   InfoRegular,
 } from "@fluentui/react-icons";
-import type { BackendError } from "../api";
+import type { BackendError, CodedClientError } from "../api";
+import { translateApiCode, useT, type TFn } from "../i18n";
+import type { ApiCode } from "../shared";
 
 interface DebugPanelProps {
   title: string;
-  error: BackendError | Error | null;
-  warnings: string[];
+  error: BackendError | CodedClientError | Error | null;
+  warnings: ApiCode[];
   debug: Record<string, unknown> | null;
   onDismiss: () => void;
   onCopy: (text: string, label: string) => void;
@@ -180,7 +182,8 @@ export function DebugPanel({
   subtitle,
   startOpen,
 }: DebugPanelProps) {
-  const facts = collectFacts(error, debug);
+  const t = useT();
+  const facts = collectFacts(error, debug, t);
   const dump = buildDump(error, warnings, debug);
 
   if (intent === "info") {
@@ -192,6 +195,7 @@ export function DebugPanel({
         startOpen={startOpen ?? false}
         onDismiss={onDismiss}
         onCopy={onCopy}
+        t={t}
       />
     );
   }
@@ -207,6 +211,7 @@ export function DebugPanel({
       startOpen={startOpen ?? true}
       onDismiss={onDismiss}
       onCopy={onCopy}
+      t={t}
     />
   );
 }
@@ -215,14 +220,15 @@ export function DebugPanel({
 
 interface ErrorDebugProps {
   title: string;
-  error: BackendError | Error | null;
-  warnings: string[];
+  error: BackendError | CodedClientError | Error | null;
+  warnings: ApiCode[];
   subtitle?: ReactNode;
   facts: Fact[];
   dump: string;
   startOpen: boolean;
   onDismiss: () => void;
   onCopy: (text: string, label: string) => void;
+  t: TFn;
 }
 
 function ErrorDebug({
@@ -235,16 +241,18 @@ function ErrorDebug({
   startOpen,
   onDismiss,
   onCopy,
+  t,
 }: ErrorDebugProps) {
   const styles = useStyles();
   const [openIds, setOpenIds] = useState<string[]>(startOpen ? ["summary"] : []);
-  const message = cleanErrorMessage(error?.message);
+  const message = renderErrorMessage(error, t);
+  const bundleLabel = t("debug.bundleLabel");
 
   return (
     <MessageBar intent="error" politeness="assertive">
       <MessageBarBody>
         <MessageBarTitle>{title}</MessageBarTitle>
-        <Body1 block>{message ?? "An unknown error occurred."}</Body1>
+        <Body1 block>{message ?? t("debug.unknownError")}</Body1>
         {subtitle}
 
         <Card appearance="subtle">
@@ -260,14 +268,19 @@ function ErrorDebug({
                   <div className={styles.panelHeader}>
                     <ErrorCircleRegular />
                     <Body1Strong>
-                      {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+                      {t(
+                        warnings.length === 1
+                          ? "debug.warnings.count"
+                          : "debug.warnings.count.plural",
+                        { count: warnings.length },
+                      )}
                     </Body1Strong>
                   </div>
                 </AccordionHeader>
                 <AccordionPanel>
                   <div className={styles.warnRow}>
                     {warnings.map((w, i) => (
-                      <Body1 key={i}>{w}</Body1>
+                      <Body1 key={i}>{translateApiCode(t, w)}</Body1>
                     ))}
                   </div>
                 </AccordionPanel>
@@ -276,19 +289,20 @@ function ErrorDebug({
 
             <AccordionItem value="summary">
               <AccordionHeader expandIconPosition="end">
-                <Body1Strong>Diagnostics</Body1Strong>
+                <Body1Strong>{t("debug.diagnostics")}</Body1Strong>
               </AccordionHeader>
               <AccordionPanel>
                 <div className={styles.details}>
                   {facts.length > 0 && <FactGrid facts={facts} />}
                   <RawDump
                     dump={dump}
-                    onCopy={() => onCopy(dump, "diagnostic bundle")}
+                    onCopy={() => onCopy(dump, bundleLabel)}
                     initiallyOpen
+                    t={t}
                   />
                   {isBackendError(error) && (
                     <Body1>
-                      Endpoint:{" "}
+                      {t("debug.endpoint")}{" "}
                       <Link href={error.endpoint} target="_blank" rel="noreferrer">
                         {error.endpoint}
                       </Link>
@@ -302,9 +316,9 @@ function ErrorDebug({
       </MessageBarBody>
       <MessageBarActions
         containerAction={
-          <Tooltip content="Dismiss" relationship="label">
+          <Tooltip content={t("common.dismiss")} relationship="label">
             <Button
-              aria-label="Dismiss"
+              aria-label={t("common.dismiss")}
               appearance="transparent"
               icon={<DismissRegular />}
               onClick={onDismiss}
@@ -312,12 +326,12 @@ function ErrorDebug({
           </Tooltip>
         }
       >
-        <Tooltip content="Copy diagnostics" relationship="label">
+        <Tooltip content={t("debug.copyDiagnostics")} relationship="label">
           <Button
-            aria-label="Copy diagnostics"
+            aria-label={t("debug.copyDiagnostics")}
             appearance="transparent"
             icon={<ClipboardRegular />}
-            onClick={() => onCopy(dump, "diagnostic bundle")}
+            onClick={() => onCopy(dump, bundleLabel)}
           />
         </Tooltip>
       </MessageBarActions>
@@ -334,15 +348,17 @@ interface InfoDebugProps {
   startOpen: boolean;
   onDismiss: () => void;
   onCopy: (text: string, label: string) => void;
+  t: TFn;
 }
 
-function InfoDebug({ title, facts, dump, startOpen, onDismiss, onCopy }: InfoDebugProps) {
+function InfoDebug({ title, facts, dump, startOpen, onDismiss, onCopy, t }: InfoDebugProps) {
   const styles = useStyles();
   const [open, setOpen] = useState(startOpen);
   const meta = facts
     .filter((f) => f.key === "idType" || f.key === "tag" || f.key === "market")
     .map((f) => f.value)
     .join(" · ");
+  const bundleLabel = t("debug.bundleLabel");
 
   return (
     <div className={styles.infoCard} role="group" aria-label={title}>
@@ -365,21 +381,21 @@ function InfoDebug({ title, facts, dump, startOpen, onDismiss, onCopy }: InfoDeb
             {meta}
           </Text>
         )}
-        <Tooltip content="Copy diagnostics" relationship="label">
+        <Tooltip content={t("debug.copyDiagnostics")} relationship="label">
           <Button
             appearance="subtle"
             size="small"
             icon={<ClipboardRegular />}
-            aria-label="Copy diagnostics"
-            onClick={() => onCopy(dump, "diagnostic bundle")}
+            aria-label={t("debug.copyDiagnostics")}
+            onClick={() => onCopy(dump, bundleLabel)}
           />
         </Tooltip>
-        <Tooltip content="Hide" relationship="label">
+        <Tooltip content={t("debug.hide")} relationship="label">
           <Button
             appearance="subtle"
             size="small"
             icon={<DismissRegular />}
-            aria-label="Hide diagnostics"
+            aria-label={t("debug.hideDiagnostics")}
             onClick={onDismiss}
           />
         </Tooltip>
@@ -387,7 +403,7 @@ function InfoDebug({ title, facts, dump, startOpen, onDismiss, onCopy }: InfoDeb
       {open && (
         <div className={styles.infoBody}>
           {facts.length > 0 && <FactGrid facts={facts} />}
-          <RawDump dump={dump} onCopy={() => onCopy(dump, "diagnostic bundle")} />
+          <RawDump dump={dump} onCopy={() => onCopy(dump, bundleLabel)} t={t} />
         </div>
       )}
     </div>
@@ -434,10 +450,12 @@ function RawDump({
   dump,
   onCopy,
   initiallyOpen = false,
+  t,
 }: {
   dump: string;
   onCopy: () => void;
   initiallyOpen?: boolean;
+  t: TFn;
 }) {
   const styles = useStyles();
   const [open, setOpen] = useState(initiallyOpen);
@@ -452,11 +470,11 @@ function RawDump({
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
         >
-          Raw JSON
+          {t("debug.rawJson")}
         </Button>
-        <Tooltip content="Copy to clipboard" relationship="label">
+        <Tooltip content={t("common.copyClipboard")} relationship="label">
           <Button size="small" appearance="subtle" icon={<CopyRegular />} onClick={onCopy}>
-            Copy
+            {t("common.copy")}
           </Button>
         </Tooltip>
       </div>
@@ -480,8 +498,9 @@ interface Fact {
 }
 
 function collectFacts(
-  error: BackendError | Error | null,
+  error: BackendError | CodedClientError | Error | null,
   debug: Record<string, unknown> | null,
+  t: TFn,
 ): Fact[] {
   const out: Fact[] = [];
   const seen = new Set<string>();
@@ -492,36 +511,36 @@ function collectFacts(
   };
 
   if (isBackendError(error)) {
-    push("endpoint", "Endpoint", error.endpoint, { mono: true });
+    push("endpoint", t("debug.fact.endpoint"), error.endpoint, { mono: true });
     if (typeof error.status === "number") {
-      push("status", "HTTP", error.status, {
+      push("status", t("debug.fact.http"), error.status, {
         tone: error.status >= 400 || error.status === 0 ? "bad" : "ok",
       });
     }
     const req = error.requestBody as Record<string, unknown> | null | undefined;
     if (req) {
-      push("productInput", "Input", req.ProductInput, { mono: true });
-      push("idType", "Type", req.IdentifierType);
-      push("market", "Market", req.Market);
-      push("tag", "Locale", req.Locale ?? req.Language);
+      push("productInput", t("debug.fact.input"), req.ProductInput, { mono: true });
+      push("idType", t("debug.fact.type"), req.IdentifierType);
+      push("market", t("debug.fact.market"), req.Market);
+      push("tag", t("debug.fact.locale"), req.Locale ?? req.Language);
     }
   }
 
   if (debug) {
-    push("productInput", "Input", debug.productInput, { mono: true });
-    push("idType", "Type", debug.idType);
-    push("market", "Market", debug.market);
-    push("tag", "Locale", debug.tag);
-    push("kind", "Error kind", debug.kind);
-    push("handlerError", "Handler error", debug.handlerError);
+    push("productInput", t("debug.fact.input"), debug.productInput, { mono: true });
+    push("idType", t("debug.fact.type"), debug.idType);
+    push("market", t("debug.fact.market"), debug.market);
+    push("tag", t("debug.fact.locale"), debug.tag);
+    push("kind", t("debug.fact.kind"), debug.kind);
+    push("handlerError", t("debug.fact.handler"), debug.handlerError);
   }
 
   return out;
 }
 
 function buildDump(
-  error: BackendError | Error | null,
-  warnings: string[],
+  error: BackendError | CodedClientError | Error | null,
+  warnings: ApiCode[],
   debug: Record<string, unknown> | null,
 ): string {
   const parts: Record<string, unknown> = {};
@@ -529,6 +548,7 @@ function buildDump(
     parts.error = {
       name: error.name,
       message: cleanErrorMessage(error.message) ?? error.message,
+      ...(hasErrorCodes(error) ? { errors: error.errors } : {}),
       ...(isBackendError(error)
         ? {
             status: error.status,
@@ -551,7 +571,7 @@ function buildDump(
 
 function debugMatchesResponse(
   debug: Record<string, unknown>,
-  error: BackendError | Error | null,
+  error: BackendError | CodedClientError | Error | null,
 ): boolean {
   if (!isBackendError(error)) return false;
   const respDebug = (error.response as { Debug?: unknown } | null)?.Debug;
@@ -573,4 +593,22 @@ function cleanErrorMessage(msg: string | undefined): string | undefined {
 
 function isBackendError(e: unknown): e is BackendError {
   return e != null && typeof e === "object" && (e as { name?: string }).name === "BackendError";
+}
+
+function hasErrorCodes(e: unknown): e is { errors: ApiCode[] } {
+  return e != null && typeof e === "object" && Array.isArray((e as { errors?: unknown }).errors);
+}
+
+/** Resolve an error to a user-facing message. Coded errors get translated to
+ *  the active locale; raw `Error`s (network failures, unexpected throws) fall
+ *  back to their `.message`. */
+function renderErrorMessage(
+  error: BackendError | CodedClientError | Error | null,
+  t: TFn,
+): string | undefined {
+  if (!error) return undefined;
+  if (hasErrorCodes(error) && error.errors.length > 0) {
+    return error.errors.map((c) => translateApiCode(t, c)).join(" · ");
+  }
+  return cleanErrorMessage(error.message);
 }

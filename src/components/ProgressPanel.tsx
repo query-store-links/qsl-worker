@@ -13,6 +13,7 @@ import {
 } from "@fluentui/react-components";
 import { DismissRegular } from "@fluentui/react-icons";
 import type { ProgressUpdate } from "../api";
+import { useT } from "../i18n";
 
 interface ProgressPanelProps {
   update: ProgressUpdate | null;
@@ -20,31 +21,31 @@ interface ProgressPanelProps {
   onAbort: () => void;
 }
 
-// User-friendly labels for each storelib_rs stage. Kept in one place so the
-// table reads top-to-bottom in the rough order they fire.
-const STAGE_LABELS: Record<string, string> = {
-  "dcat.request": "Querying Microsoft Store catalog",
-  "dcat.response": "Receiving catalog response",
-  "dcat.parse": "Parsing catalog data",
-  "dcat.done": "Product found",
-  "dcat.notFound": "Product not found",
-  "fe3.start": "Starting package resolution",
-  "fe3.getCookie": "Authenticating with FE3",
-  "fe3.syncUpdates": "Requesting package updates",
-  "fe3.parseUpdateIds": "Reading update IDs",
-  "fe3.parseUpdateIds.done": "Found update IDs",
-  "fe3.parsePackages": "Reading package metadata",
-  "fe3.parsePackages.done": "Parsed packages",
-  "fe3.resolveUrls": "Resolving download URLs",
-  "fe3.resolveUrls.done": "Resolved download URLs",
-  "fe3.done": "Package resolution complete",
-  "search.request": "Sending search query",
-  "search.response": "Receiving search response",
-  "search.parse": "Parsing search response",
-  "search.done": "Search complete",
-  "retry.wait": "Waiting before retry",
-  "retry.attempt": "Retrying request",
-};
+// Known storelib_rs stage codes — used to decide whether to look up a
+// translated label (`stage.<code>`) or fall back to the raw stage string.
+const KNOWN_STAGES = new Set<string>([
+  "dcat.request",
+  "dcat.response",
+  "dcat.parse",
+  "dcat.done",
+  "dcat.notFound",
+  "fe3.start",
+  "fe3.getCookie",
+  "fe3.syncUpdates",
+  "fe3.parseUpdateIds",
+  "fe3.parseUpdateIds.done",
+  "fe3.parsePackages",
+  "fe3.parsePackages.done",
+  "fe3.resolveUrls",
+  "fe3.resolveUrls.done",
+  "fe3.done",
+  "search.request",
+  "search.response",
+  "search.parse",
+  "search.done",
+  "retry.wait",
+  "retry.attempt",
+]);
 
 const useStyles = makeStyles({
   card: { padding: "16px 20px" },
@@ -80,10 +81,15 @@ const useStyles = makeStyles({
 
 export function ProgressPanel({ update, query, onAbort }: ProgressPanelProps) {
   const styles = useStyles();
-  const label = update ? (STAGE_LABELS[update.stage] ?? update.stage) : "Starting";
+  const t = useT();
+  const label = update
+    ? KNOWN_STAGES.has(update.stage)
+      ? t(`stage.${update.stage}`)
+      : update.stage
+    : t("progress.starting");
   const counter =
     update && update.current != null && update.total != null
-      ? `${update.current} of ${update.total}`
+      ? t("progress.counter", { current: update.current, total: update.total })
       : null;
 
   const ratio =
@@ -108,7 +114,7 @@ export function ProgressPanel({ update, query, onAbort }: ProgressPanelProps) {
               {update.message}
             </Body1>
           ) : (
-            <Caption1>Connecting to the worker…</Caption1>
+            <Caption1>{t("progress.connecting")}</Caption1>
           )}
           {query && (
             <Text className={styles.query} title={query}>
@@ -116,12 +122,12 @@ export function ProgressPanel({ update, query, onAbort }: ProgressPanelProps) {
             </Text>
           )}
         </div>
-        <Tooltip content="Cancel" relationship="label">
+        <Tooltip content={t("common.cancel")} relationship="label">
           <Button
             appearance="subtle"
             icon={<DismissRegular />}
             onClick={onAbort}
-            aria-label="Cancel"
+            aria-label={t("common.cancel")}
           />
         </Tooltip>
       </div>

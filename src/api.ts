@@ -4,6 +4,7 @@ import {
   inferArch,
   inferVersion,
   parseSizeStr,
+  type ApiCode,
   type NormalizedItem,
   type PackageType,
   type ResolveAllResponse,
@@ -12,7 +13,7 @@ import {
 
 export interface BackendResult {
   items: NormalizedItem[];
-  warnings: string[];
+  warnings: ApiCode[];
   debug: Record<string, unknown> | null;
   raw: ResolveAllResponse;
 }
@@ -25,22 +26,37 @@ export interface ProgressUpdate {
   total: number | null;
 }
 
+/** Frontend-side coded error used when a client-side check fails after a
+ *  successful response (e.g. zero usable items). UI surfaces translate via
+ *  the `errors` field, just like {@link BackendError}. */
+export class CodedClientError extends Error {
+  readonly errors: ApiCode[];
+  constructor(errors: ApiCode[]) {
+    super(errors.map((e) => e.code).join(", ") || "CodedClientError");
+    this.name = "CodedClientError";
+    this.errors = errors;
+  }
+}
+
 export class BackendError extends Error {
   readonly status: number;
+  readonly errors: ApiCode[];
   readonly response: ResolveAllResponse | null;
   readonly endpoint: string;
   readonly requestBody: Record<string, unknown>;
-  constructor(
-    message: string,
-    opts: {
-      status: number;
-      response: ResolveAllResponse | null;
-      endpoint: string;
-      requestBody: Record<string, unknown>;
-    },
-  ) {
-    super(message);
+  constructor(opts: {
+    errors: ApiCode[];
+    status: number;
+    response: ResolveAllResponse | null;
+    endpoint: string;
+    requestBody: Record<string, unknown>;
+  }) {
+    // `message` is filled with the raw code strings (e.g. "product.notFound")
+    // so unhandled-rejection logs still carry something searchable. UI surfaces
+    // localize via `errors`.
+    super(opts.errors.map((e) => e.code).join(", ") || "BackendError");
     this.name = "BackendError";
+    this.errors = opts.errors;
     this.status = opts.status;
     this.response = opts.response;
     this.endpoint = opts.endpoint;
@@ -97,9 +113,22 @@ export async function callBackend(
     }
   }
 
-  if (!res.ok || raw?.Errors?.length) {
-    const msg = raw?.Errors?.[0] ?? `Backend returned HTTP ${res.status}`;
-    throw new BackendError(msg, {
+  // Prefer the structured `ErrorCodes` form (lets us localize). Fall back to
+  // the legacy `Errors: string[]` shape when consuming an older worker — we
+  // wrap each raw string under the `legacy` code so the UI still renders it
+  // verbatim instead of dropping the message.
+  const codedErrors = raw?.ErrorCodes?.length
+    ? raw.ErrorCodes
+    : raw?.Errors?.length
+      ? raw.Errors.map<ApiCode>((message) => ({ code: "legacy", params: { message } }))
+      : null;
+
+  if (!res.ok || codedErrors) {
+    const errors: ApiCode[] = codedErrors ?? [
+      { code: "client.httpError", params: { status: res.status } },
+    ];
+    throw new BackendError({
+      errors,
       status: res.status,
       response: raw,
       endpoint: url,
@@ -107,7 +136,8 @@ export async function callBackend(
     });
   }
   if (!raw) {
-    throw new BackendError("Backend returned an empty body.", {
+    throw new BackendError({
+      errors: [{ code: "client.emptyBody" }],
       status: res.status,
       response: null,
       endpoint: url,
@@ -130,9 +160,16 @@ export async function callBackend(
       };
     });
 
+  // Same `*Codes`-first / legacy-strings-fallback logic as for errors.
+  const warnings: ApiCode[] = raw.WarningCodes?.length
+    ? raw.WarningCodes
+    : raw.Warnings?.length
+      ? raw.Warnings.map((message) => ({ code: "legacy", params: { message } }))
+      : [];
+
   return {
     items: [...flatten(raw.AppxPackages, "APPX"), ...flatten(raw.NonAppxPackages, "Other")],
-    warnings: raw.Warnings ?? [],
+    warnings,
     debug: raw.Debug ?? null,
     raw,
   };

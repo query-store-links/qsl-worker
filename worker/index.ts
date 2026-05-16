@@ -33,12 +33,14 @@ import type {
   ProgressEvent,
   StorelibError,
 } from "@query-store-links/storelib_rs/web/storelib_rs.js";
-import type {
-  AppInfo,
-  DownloadItem,
-  IdentifierType,
-  ResolveAllRequest,
-  ResolveAllResponse,
+import {
+  renderApiCode,
+  type ApiCode,
+  type AppInfo,
+  type DownloadItem,
+  type IdentifierType,
+  type ResolveAllRequest,
+  type ResolveAllResponse,
 } from "../src/shared";
 
 initSync({ module: wasmModule });
@@ -74,6 +76,25 @@ function errKind(e: unknown): StorelibError["kind"] | "unknown" {
   return "unknown";
 }
 
+function code(c: string, params?: Record<string, string | number>): ApiCode {
+  return params ? { code: c, params } : { code: c };
+}
+
+// Mirror coded errors/warnings into the legacy `Errors`/`Warnings` string
+// arrays so non-localizing API consumers (curl, scripts, older frontends)
+// keep working unchanged. New consumers read the structured `*Codes` form.
+function asErrors(codes: ApiCode[]): { Errors: string[]; ErrorCodes: ApiCode[] } {
+  return { Errors: codes.map((c) => renderApiCode(c)), ErrorCodes: codes };
+}
+
+function asWarnings(codes: ApiCode[] | undefined): {
+  Warnings?: string[];
+  WarningCodes?: ApiCode[];
+} {
+  if (!codes || codes.length === 0) return {};
+  return { Warnings: codes.map((c) => renderApiCode(c)), WarningCodes: codes };
+}
+
 // ── locale resolution ───────────────────────────────────────────────────
 // storelib_rs 0.1.7 adds `Locale.fromTag(bcp47, includeNeutral)` which
 // accepts BCP-47 tags directly (incl. `en-GB`, `zh-Hant-TW`). We resolve
@@ -89,18 +110,20 @@ export interface ResolvedLocale {
   market: string; // canonical ISO 3166-1, e.g. "US"
   language: string; // canonical ISO 639-1, e.g. "en"
   tag: string; // canonical BCP-47, e.g. "en-US"
-  warnings: string[];
+  warnings: ApiCode[];
 }
 
 function resolveLocale(req: ResolveAllRequest): ResolvedLocale {
-  const warnings: string[] = [];
+  const warnings: ApiCode[] = [];
 
   const rawMarket = (req.Market ?? "US").trim() || "US";
   let market = rawMarket.toUpperCase().slice(0, 2) || "US";
   try {
     market = parseMarket(rawMarket).code;
   } catch (e) {
-    warnings.push(`Unknown market "${rawMarket}", defaulting to "${market}". (${String(e)})`);
+    warnings.push(
+      code("locale.unknownMarket", { raw: rawMarket, fallback: market, detail: String(e) }),
+    );
   }
 
   const tagSource = req.Locale?.trim() || req.LanguageTag?.trim();
@@ -109,7 +132,7 @@ function resolveLocale(req: ResolveAllRequest): ResolvedLocale {
       const tag = parseLanguageTag(tagSource).code;
       return { market, language: tag.split("-")[0].toLowerCase(), tag, warnings };
     } catch (e) {
-      warnings.push(`Unknown language tag "${tagSource}". (${String(e)})`);
+      warnings.push(code("locale.unknownLanguageTag", { raw: tagSource, detail: String(e) }));
     }
   }
 
@@ -119,7 +142,7 @@ function resolveLocale(req: ResolveAllRequest): ResolvedLocale {
     try {
       language = parseLanguage(langInput).code;
     } catch (e) {
-      warnings.push(`Unknown language "${langInput}". (${String(e)})`);
+      warnings.push(code("locale.unknownLanguage", { raw: langInput, detail: String(e) }));
     }
     const composed = `${language}-${market}`;
     try {
@@ -135,14 +158,12 @@ function resolveLocale(req: ResolveAllRequest): ResolvedLocale {
   return { market, language: "en", tag: "en-US", warnings };
 }
 
-function buildLocale(resolved: ResolvedLocale): { locale: Locale; warnings: string[] } {
+function buildLocale(resolved: ResolvedLocale): { locale: Locale; warnings: ApiCode[] } {
   const warnings = [...resolved.warnings];
   try {
     return { locale: Locale.fromTag(resolved.tag, true), warnings };
   } catch (e) {
-    warnings.push(
-      `Locale.fromTag("${resolved.tag}") failed: ${String(e)} — falling back to en-US.`,
-    );
+    warnings.push(code("locale.tagFailed", { tag: resolved.tag, detail: String(e) }));
     return { locale: Locale.fromTag("en-US", true), warnings };
   }
 }
@@ -184,18 +205,19 @@ async function handleNonAppx(
   const url =
     `http://storeedgefd.dsx.mp.microsoft.com/v9.0/packageManifests/${productId.toLowerCase()}` +
     `?locale=${locale.toLowerCase()}&market=${market.toUpperCase()}`;
+  const notFound = (): ResolveAllResponse => asErrors([code("nonAppx.notFound")]);
   let manifest: PackageManifestResponse;
   try {
     const r = await fetch(url);
-    if (!r.ok) return { Errors: ["Non-Appx product not found."] };
+    if (!r.ok) return notFound();
     manifest = await r.json();
   } catch {
-    return { Errors: ["Non-Appx product not found."] };
+    return notFound();
   }
   const data = manifest.Data;
-  if (!data) return { Errors: ["Non-Appx product not found."] };
+  if (!data) return notFound();
   const version = data.Versions[0];
-  if (!version) return { Errors: ["Non-Appx product not found."] };
+  if (!version) return notFound();
 
   const loc = version.DefaultLocale;
   const appName = loc?.PackageName ?? "Unknown";
@@ -247,16 +269,16 @@ async function handleAppx(
       await handler.queryDcat(productInput, idType, null, signal);
     } catch (e) {
       return {
-        Errors: [`Product lookup failed: ${String(e)}`],
-        Warnings: warnings.length ? warnings : undefined,
+        ...asErrors([code("product.lookupFailed", { detail: String(e) })]),
+        ...asWarnings(warnings),
         Debug: { ...debug, kind: errKind(e), handlerError: handler.error ?? null },
       };
     }
 
     if (!handler.isFound) {
       return {
-        Errors: ["Product not found."],
-        Warnings: warnings.length ? warnings : undefined,
+        ...asErrors([code("product.notFound")]),
+        ...asWarnings(warnings),
         Debug: { ...debug, isFound: false, handlerError: handler.error ?? null },
       };
     }
@@ -277,8 +299,8 @@ async function handleAppx(
       return {
         ProductId: productId,
         AppInfo: appInfo,
-        Errors: [`Failed to fetch packages: ${String(e)}`],
-        Warnings: warnings.length ? warnings : undefined,
+        ...asErrors([code("packages.fetchFailed", { detail: String(e) })]),
+        ...asWarnings(warnings),
         Debug: { ...debug, kind: errKind(e) },
       };
     }
@@ -342,7 +364,7 @@ async function handleAppx(
       ProductId: productId,
       AppInfo: appInfo,
       AppxPackages: items,
-      Warnings: warnings.length ? warnings : undefined,
+      ...asWarnings(warnings),
       Debug: {
         ...debug,
         dcatPackageCount: handler.packages.length,
@@ -360,16 +382,16 @@ async function handleAppx(
 
 async function resolveAll(req: Request): Promise<Response> {
   if (req.method !== "POST") {
-    return json({ Errors: ["Method not allowed. POST a JSON body."] }, 405);
+    return json(asErrors([code("method.notAllowed")]), 405);
   }
   let body: ResolveAllRequest;
   try {
     body = (await req.json()) as ResolveAllRequest;
   } catch (e) {
-    return json({ Errors: [`Could not parse request body as JSON: ${String(e)}`] }, 400);
+    return json(asErrors([code("request.invalidJson", { detail: String(e) })]), 400);
   }
   const productInput = body.ProductInput?.trim();
-  if (!productInput) return json({ Errors: ["ProductInput is required."] }, 400);
+  if (!productInput) return json(asErrors([code("productInput.required")]), 400);
 
   // Streaming: when the client sends `Accept: application/x-ndjson` we
   // emit one JSON event per line — progress events as storelib_rs reaches
@@ -391,7 +413,7 @@ async function oneShotResolveAll(productInput: string, body: ResolveAllRequest):
     console.error("resolveAll uncaught:", e);
     return json(
       {
-        Errors: [`Internal error: ${String(e)}`],
+        ...asErrors([code("internal.error", { detail: String(e) })]),
         Debug: { ...resolved, productInput, kind: errKind(e) },
       },
       500,
@@ -418,7 +440,13 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
     const resolved = resolveLocale(body);
     await send({ type: "start", productInput, ...resolved });
     if (resolved.warnings.length) {
-      await send({ type: "warnings", warnings: resolved.warnings });
+      // Mirror both forms in the streaming event for parity with the final
+      // result payload: legacy English strings + structured codes.
+      await send({
+        type: "warnings",
+        warnings: resolved.warnings.map((c) => renderApiCode(c)),
+        warningCodes: resolved.warnings,
+      });
     }
     try {
       const result = productInput.toLowerCase().startsWith("xp")
@@ -439,7 +467,7 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
       console.error("streamResolveAll uncaught:", e);
       await send({
         type: "result",
-        Errors: [`Internal error: ${String(e)}`],
+        ...asErrors([code("internal.error", { detail: String(e) })]),
         Debug: { ...resolved, productInput, kind: errKind(e) },
       });
     } finally {
@@ -542,20 +570,15 @@ export default {
       response = json({ parsedTag, parsedLang, parsedMarket, err });
     } else if (url.pathname === "/api/links/resolve-all") {
       if (apiDisabled) {
-        response = json(
-          {
-            Errors: [
-              "This deployment's built-in resolver is disabled. Configure a third-party API Backend in Settings to use this UI.",
-            ],
-            Code: 503,
-          },
-          503,
-        );
+        response = json({ ...asErrors([code("apiDisabled")]), Code: 503 }, 503);
       } else {
         response = await resolveAll(request);
       }
     } else if (url.pathname.startsWith("/api/")) {
-      response = json({ Errors: [`No such API route: ${url.pathname}`], Code: 404 }, 404);
+      response = json(
+        { ...asErrors([code("route.notFound", { path: url.pathname })]), Code: 404 },
+        404,
+      );
     } else {
       // Asset responses are same-origin and have immutable headers — return
       // them directly without applying CORS.
