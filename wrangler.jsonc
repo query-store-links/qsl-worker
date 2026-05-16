@@ -17,4 +17,10 @@
   },
   "upload_source_maps": true,
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "qsl.krnl64.win",
+      "custom_domain": true,
+    },
+  ],
 }
