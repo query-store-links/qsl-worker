@@ -36,6 +36,7 @@ import {
   MARKETS,
   RINGS,
   detectIdentifierType,
+  supportsWuCategoryId,
   type Ring,
   type SearchFormData,
 } from "../shared";
@@ -49,6 +50,10 @@ interface SearchCardProps {
   onAbort: () => void;
   shareUrl: string;
   onCopyShare: () => void;
+  /** Worker package.json version reported by `/api/_meta`. Used to gate
+   *  identifier types that require a worker upgrade (e.g. `WuCategoryId`
+   *  needs ≥ 0.1.1). `null` for older deployments that don't expose meta. */
+  workerVersion?: string | null;
 }
 
 const useStyles = makeStyles({
@@ -202,6 +207,7 @@ export function SearchCard({
   onAbort,
   shareUrl,
   onCopyShare,
+  workerVersion,
 }: SearchCardProps) {
   const styles = useStyles();
   const t = useT();
@@ -210,6 +216,16 @@ export function SearchCard({
     setForm((p) => ({ ...p, [k]: v }));
 
   const detected = useMemo(() => detectIdentifierType(form.productInput), [form.productInput]);
+  // `WuCategoryId` is FE3-only and was added to the worker in 0.1.1. Older
+  // deployments don't recognise the type at all (they'd silently fall back
+  // to ProductId via `parseIdentifierType`), so hide the pill when the
+  // backend reports an older version (or no version, which means an even
+  // older deployment that predates `/api/_meta` carrying `version`).
+  const wuSupported = supportsWuCategoryId(workerVersion);
+  const idTypes = useMemo(
+    () => (wuSupported ? ID_TYPES : ID_TYPES.filter((t) => t.value !== "WuCategoryId")),
+    [wuSupported],
+  );
   const detectionMatch = detected != null && detected === form.identifierType;
   const detectionMismatch = detected != null && detected !== form.identifierType;
   const meta = ID_TYPE_BY_VALUE[form.identifierType];
@@ -344,7 +360,7 @@ export function SearchCard({
           {t("search.identifierType")}
         </Label>
         <div className={styles.pickerRow}>
-          {ID_TYPES.map((idt) => {
+          {idTypes.map((idt) => {
             const active = idt.value === form.identifierType;
             return (
               <button

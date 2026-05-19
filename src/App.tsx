@@ -566,6 +566,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
             onAbort={() => abortRef.current?.abort()}
             shareUrl={shareUrl}
             onCopyShare={copyShare}
+            workerVersion={backendMeta?.version ?? null}
           />
         </div>
 

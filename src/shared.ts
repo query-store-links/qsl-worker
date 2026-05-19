@@ -5,6 +5,7 @@ export type IdentifierType =
   | "XboxTitleId"
   | "PackageFamilyName"
   | "ContentId"
+  | "WuCategoryId"
   | "LegacyWindowsPhoneProductId"
   | "LegacyWindowsStoreProductId"
   | "LegacyXboxProductId";
@@ -186,6 +187,15 @@ export const ID_TYPES: IdTypeMeta[] = [
     group: "modern",
   },
   {
+    value: "WuCategoryId",
+    label: "WU Category ID",
+    short: "WU Category",
+    hint: "GUID consumed by Windows Update (FE3) — skips DisplayCatalog",
+    example: "8b3e3a1c-2a4e-4f3a-9c1b-8a4f2e3d5c6b",
+    pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    group: "modern",
+  },
+  {
     value: "LegacyWindowsStoreProductId",
     label: "Legacy Store Product ID",
     short: "Legacy Store",
@@ -250,6 +260,35 @@ export const LOCALES: string[] = [
   "ru-RU",
   "es-ES",
 ];
+
+/** Worker package.json version that first added the FE3-only WuCategoryId
+ *  resolver. Older deployments reject the identifier type. */
+export const MIN_WU_CATEGORY_ID_WORKER_VERSION = "0.1.1";
+
+/** True when `version` is `>= target` under a strict three-component
+ *  `MAJOR.MINOR.PATCH` compare. `null` is treated as older (the worker's
+ *  `/api/_meta` only emits `version` since 0.1.0, so absence means a build
+ *  predating this feature). Non-numeric components clamp to 0. */
+export function versionAtLeast(version: string | null | undefined, target: string): boolean {
+  if (!version) return false;
+  const parse = (s: string) =>
+    s.split(".").map((n) => {
+      const v = parseInt(n, 10);
+      return Number.isFinite(v) ? v : 0;
+    });
+  const v = parse(version);
+  const t = parse(target);
+  for (let i = 0; i < Math.max(v.length, t.length); i++) {
+    const a = v[i] ?? 0;
+    const b = t[i] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return true;
+}
+
+export function supportsWuCategoryId(workerVersion: string | null | undefined): boolean {
+  return versionAtLeast(workerVersion, MIN_WU_CATEGORY_ID_WORKER_VERSION);
+}
 
 export function detectIdentifierType(raw: string): IdentifierType | null {
   const s = raw.trim();

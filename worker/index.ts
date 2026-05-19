@@ -20,6 +20,7 @@
 import wasmModule from "@query-store-links/storelib_rs/web/storelib_rs_bg.wasm";
 import {
   DisplayCatalogHandler,
+  Fe3Handler,
   Locale,
   initSync,
   parseIdentifierType,
@@ -28,7 +29,7 @@ import {
   parseMarket,
 } from "@query-store-links/storelib_rs/web/storelib_rs.js";
 import type {
-  IdentifierTypeStr,
+  IdentifierType,
   PackageInstance,
   ProgressEvent,
   StorelibError,
@@ -38,7 +39,6 @@ import {
   type ApiCode,
   type AppInfo,
   type DownloadItem,
-  type IdentifierType,
   type ResolveAllRequest,
   type ResolveAllResponse,
 } from "../src/shared";
@@ -220,12 +220,20 @@ function buildLocale(resolved: ResolvedLocale): { locale: Locale; warnings: ApiC
   }
 }
 
-function resolveIdType(t: IdentifierType | undefined): IdentifierTypeStr {
+function resolveIdType(t: string | undefined): IdentifierType {
   try {
     return parseIdentifierType(t ?? "ProductId");
   } catch {
     return "productId";
   }
+}
+
+// `WuCategoryId` is an FE3-side identifier — DCat doesn't accept it as a
+// lookup key, so `parseIdentifierType` rejects it. We detect it ahead of the
+// storelib parser and dispatch to the FE3-only handler.
+function isWuCategoryIdType(t: string | undefined): boolean {
+  if (!t) return false;
+  return t.replace(/[^a-z0-9]/gi, "").toLowerCase() === "wucategoryid";
 }
 
 // ── non-AppX (winget) path — mirrors qsl_rs handle_non_appx ──────────────
@@ -294,6 +302,230 @@ async function handleNonAppx(
   };
 }
 
+// ── WuCategoryId path — FE3 only, no DisplayCatalog ─────────────────────
+//
+// DCat doesn't accept WuCategoryId as a lookup key, so this path skips it
+// entirely and drives FE3 directly. Product metadata (title, publisher,
+// description) isn't available, so AppInfo carries placeholder strings and
+// the WuCategoryId is echoed as both CategoryId and ProductId. SHA-256 is
+// not surfaced either — FE3's `<File Digest>` is SHA-1 in practice.
+
+async function handleWuCategoryId(
+  wuCategoryId: string,
+  resolved: ResolvedLocale,
+  signal: AbortSignal | null,
+  onProgress: ((e: ProgressEvent) => void) | null = null,
+): Promise<ResolveAllResponse> {
+  const warnings: ApiCode[] = [...resolved.warnings];
+  const debug = {
+    market: resolved.market,
+    language: resolved.language,
+    tag: resolved.tag,
+    idType: "wuCategoryId",
+    productInput: wuCategoryId,
+  };
+
+  // `DisplayCatalogHandler` emits progress events through wasm; this path
+  // skips it entirely, so synthesize the same `fe3.*` stages by hand. The
+  // stream consumer in `streamResolveAll` parses `fe3.packageResolved` to
+  // push live package rows — the wire format must match `parseLinkReceived`.
+  const emit = (
+    stage: ProgressEvent["stage"],
+    message: string,
+    current: number | null = null,
+    total: number | null = null,
+  ): void => {
+    onProgress?.({ stage, message, current, total });
+  };
+  const sizeForMessage = (n: number | bigint | null | undefined): string => {
+    if (n == null) return "?";
+    const num = typeof n === "bigint" ? n.toString() : String(n);
+    return num;
+  };
+
+  const checkAborted = (): boolean => signal?.aborted === true;
+  const fe3 = new Fe3Handler();
+  try {
+    emit("fe3.start", `WuCategoryId=${wuCategoryId}`);
+    emit("fe3.syncUpdates", `wuCategoryId=${wuCategoryId}`);
+    let xml: string;
+    try {
+      xml = await fe3.syncUpdates(wuCategoryId, null);
+    } catch (e) {
+      return {
+        ...asErrors([code("packages.fetchFailed", { detail: String(e) })]),
+        ...asWarnings(warnings),
+        Debug: { ...debug, kind: errKind(e), causes: errCauses(e) },
+      };
+    }
+    if (checkAborted()) {
+      return {
+        ...asErrors([code("packages.fetchFailed", { detail: "aborted" })]),
+        ...asWarnings(warnings),
+        Debug: { ...debug, kind: "cancelled" },
+      };
+    }
+
+    let ids: { updateIds: string[]; revisionIds: string[] };
+    let instances: PackageInstance[];
+    try {
+      emit("fe3.parseUpdateIds", `${xml.length} bytes XML`);
+      ids = Fe3Handler.processUpdateIds(xml) as {
+        updateIds: string[];
+        revisionIds: string[];
+      };
+      emit(
+        "fe3.parseUpdateIds.done",
+        "update IDs parsed",
+        ids.updateIds.length,
+        ids.updateIds.length,
+      );
+      emit("fe3.parsePackages", "parsing package instances");
+      instances = (await Fe3Handler.getPackageInstances(xml)) as PackageInstance[];
+      emit(
+        "fe3.parsePackages.done",
+        "package instances parsed",
+        instances.length,
+        instances.length,
+      );
+    } catch (e) {
+      return {
+        ...asErrors([code("packages.fetchFailed", { detail: String(e) })]),
+        ...asWarnings(warnings),
+        Debug: { ...debug, kind: errKind(e), causes: errCauses(e) },
+      };
+    }
+
+    if (instances.length === 0) {
+      return {
+        ...asErrors([code("product.notFound")]),
+        ...asWarnings(warnings),
+        Debug: { ...debug, isFound: false, syncUpdatesBytes: xml.length },
+      };
+    }
+
+    // Fan-out one `fe3.packageFound` per discovered package — same shape the
+    // wasm side emits after `SyncUpdates` parse completes.
+    const totalPkgs = instances.length;
+    for (let i = 0; i < totalPkgs; i++) {
+      const inst = instances[i];
+      const uid = ids.updateIds[i] ?? "";
+      emit("fe3.packageFound", `${inst.packageMoniker} | updateId=${uid}`, i + 1, totalPkgs);
+    }
+
+    emit("fe3.resolveUrls", `resolving ${ids.updateIds.length} URLs`);
+    // storelib 0.1.10 exposes `Fe3Handler.onProgress`, which fires
+    // `fe3.linkReceived` per URL as each `GetExtendedUpdateInfo2` response
+    // is parsed. The wasm message format is
+    //   `"uri=<url> | size=<bytes-or-?> | updateId=<id>"`
+    // — no moniker prefix. The streaming consumer (`parseLinkReceived` in
+    // this file) requires `"<moniker> | uri=<url> | size=… | updateId=…"`,
+    // so we intercept the wasm event, look up the owning moniker by
+    // updateId, and re-emit with the moniker prepended.
+    const monikerByUpdateId = new Map<string, string>();
+    for (let i = 0; i < instances.length; i++) {
+      const uid = ids.updateIds[i];
+      if (uid) monikerByUpdateId.set(uid, instances[i].packageMoniker);
+    }
+    fe3.onProgress((e) => {
+      if (e.stage !== "fe3.linkReceived") {
+        onProgress?.(e);
+        return;
+      }
+      // Parse `uri=<url> | size=<...> | updateId=<id>`. Anchor on the tail
+      // tokens so a URL containing `|` doesn't break the split.
+      const updateIdMark = " | updateId=";
+      const sizeMark = " | size=";
+      const uriMark = "uri=";
+      const updateIdIdx = e.message.lastIndexOf(updateIdMark);
+      const sizeIdx = e.message.lastIndexOf(sizeMark);
+      const uriIdx = e.message.indexOf(uriMark);
+      if (updateIdIdx < 0 || sizeIdx < 0 || uriIdx !== 0) {
+        onProgress?.(e);
+        return;
+      }
+      const updateId = e.message.slice(updateIdIdx + updateIdMark.length);
+      const sizeStr = e.message.slice(sizeIdx + sizeMark.length, updateIdIdx);
+      const uri = e.message.slice(uriMark.length, sizeIdx);
+      const moniker = monikerByUpdateId.get(updateId) ?? "<unknown>";
+      onProgress?.({
+        stage: "fe3.linkReceived",
+        message: `${moniker} | uri=${uri} | size=${sizeStr} | updateId=${updateId}`,
+        current: e.current,
+        total: e.total,
+      });
+    });
+
+    let urls: Array<{ url: string; size: number | bigint | null }>;
+    try {
+      urls = (await fe3.getFileUrls(ids.updateIds, ids.revisionIds, null)) as Array<{
+        url: string;
+        size: number | bigint | null;
+      }>;
+    } catch (e) {
+      return {
+        ...asErrors([code("packages.fetchFailed", { detail: String(e) })]),
+        ...asWarnings(warnings),
+        Debug: { ...debug, kind: errKind(e), causes: errCauses(e) },
+      };
+    }
+    emit("fe3.resolveUrls.done", "URLs resolved", urls.length, ids.updateIds.length);
+
+    // FE3 returns parallel arrays — index i in `instances` corresponds to
+    // index i in `urls` / `ids.updateIds`. `getPackageInstances` leaves
+    // `packageUri` null because the URL resolution is a separate SOAP call,
+    // so merge it back in here. After each merge, emit `fe3.packageResolved`
+    // so the streaming consumer can push the row immediately.
+    const items: DownloadItem[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < instances.length; i++) {
+      const pkg = instances[i];
+      const resolvedUrl = urls[i] ?? null;
+      const uri = resolvedUrl?.url ?? pkg.packageUri ?? "";
+      const size = resolvedUrl?.size ?? pkg.packageSize ?? null;
+      const updateId = ids.updateIds[i] ?? "";
+      emit(
+        "fe3.packageResolved",
+        `${pkg.packageMoniker} | uri=${uri || "<none>"} | size=${sizeForMessage(size)} | updateId=${updateId}`,
+        i + 1,
+        totalPkgs,
+      );
+      const key = uri || pkg.packageMoniker;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        FileName: pkg.readableFileName || pkg.packageMoniker || "Unknown",
+        FileLink: uri,
+        FileSize: bytesToString(size),
+        Sha256: null,
+      });
+    }
+    emit("fe3.done", `${items.length} package(s) resolved`);
+
+    const appInfo: AppInfo = {
+      Name: "Unknown Name",
+      Publisher: "Unknown Publisher",
+      Description: "",
+      CategoryId: wuCategoryId,
+      ProductId: wuCategoryId,
+    };
+
+    return {
+      ProductId: wuCategoryId,
+      AppInfo: appInfo,
+      AppxPackages: items,
+      ...asWarnings(warnings),
+      Debug: {
+        ...debug,
+        fe3PackageCount: instances.length,
+        fe3ResolvedUrlCount: urls.length,
+      },
+    };
+  } finally {
+    fe3.free();
+  }
+}
+
 // ── AppX (DisplayCatalog) path ───────────────────────────────────────────
 
 async function handleAppx(
@@ -303,6 +535,9 @@ async function handleAppx(
   signal: AbortSignal | null,
   onProgress: ((e: ProgressEvent) => void) | null = null,
 ): Promise<ResolveAllResponse> {
+  if (isWuCategoryIdType(req.IdentifierType)) {
+    return handleWuCategoryId(productInput, resolved, signal, onProgress);
+  }
   const idType = resolveIdType(req.IdentifierType);
   const built = buildLocale(resolved);
   const warnings = built.warnings;
