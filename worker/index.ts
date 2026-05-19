@@ -35,6 +35,7 @@ import type {
   StorelibError,
 } from "@query-store-links/storelib_rs/web/storelib_rs.js";
 import {
+  detectIdentifierType,
   renderApiCode,
   type ApiCode,
   type AppInfo,
@@ -694,15 +695,31 @@ async function resolveAll(req: Request): Promise<Response> {
   return wantsStream ? streamResolveAll(productInput, body) : oneShotResolveAll(productInput, body);
 }
 
-async function oneShotResolveAll(productInput: string, body: ResolveAllRequest): Promise<Response> {
+/** Dispatch a `ResolveAllRequest` through the right backend handler
+ *  (non-appx vs. DCat vs. FE3-only WuCategoryId). Returns the same shape
+ *  as the API but as a JS value, not a `Response`. Internal callers
+ *  (download permalink, future endpoints) reuse this without re-paying
+ *  the JSON-encode/decode round-trip. */
+async function resolveProduct(
+  productInput: string,
+  body: ResolveAllRequest,
+  signal: AbortSignal | null = null,
+  onProgress: ((e: ProgressEvent) => void) | null = null,
+): Promise<{ resolved: ResolvedLocale; result: ResolveAllResponse }> {
   const resolved = resolveLocale(body);
+  const result = productInput.toLowerCase().startsWith("xp")
+    ? await handleNonAppx(productInput, resolved.tag, resolved.market)
+    : await handleAppx(productInput, body, resolved, signal, onProgress);
+  return { resolved, result };
+}
+
+async function oneShotResolveAll(productInput: string, body: ResolveAllRequest): Promise<Response> {
   try {
-    const result = productInput.toLowerCase().startsWith("xp")
-      ? await handleNonAppx(productInput, resolved.tag, resolved.market)
-      : await handleAppx(productInput, body, resolved, null);
+    const { result } = await resolveProduct(productInput, body);
     return json(result);
   } catch (e) {
     console.error("resolveAll uncaught:", e);
+    const resolved = resolveLocale(body);
     return json(
       {
         ...asErrors([code("internal.error", { detail: String(e) })]),
@@ -816,6 +833,495 @@ function streamResolveAll(productInput: string, body: ResolveAllRequest): Respon
   });
 }
 
+// ── Download permalink — GET /d, /download, /installer/download ─────────
+//
+// Shareable redirect: a GET URL that resolves a Microsoft Store identifier
+// through the same pipeline as `/api/links/resolve-all` and either redirects
+// (default), proxies (`?proxy=true`), or returns JSON (`?format=json` or
+// `Accept: application/json`) for the picked download.
+//
+// Selection algorithm
+// --------------------
+// 1. Drop framework packages (VCLibs, .NET Native, etc.) unless `include`
+//    contains `framework`.
+// 2. If `match=<regex>` is set, keep only filenames matching the regex
+//    (case-insensitive).
+// 3. If `arch=<a>` is set, keep only that architecture.
+// 4. Sort by score: bundle (-bundle) → preferred arch (x64 > arm64 > x86 >
+//    neutral) → larger size first (better match for the "real" package
+//    over a tiny stub).
+// 5. Pick `n` (default 0). If empty after filtering, 404.
+//
+// Identifier handling
+// -------------------
+// The id is taken from the path component, URI-decoded. If `type` is given
+// in the query, it's used verbatim (any casing). Otherwise the
+// shared-side `detectIdentifierType` heuristic runs; a miss falls back to
+// `ProductId`. `WuCategoryId` is supported same as the POST API.
+
+const FRAMEWORK_PREFIXES: readonly string[] = [
+  "microsoft.vclibs",
+  "microsoft.net.native",
+  "microsoft.netcore",
+  "microsoft.ui.xaml",
+  "microsoft.services.store.engagement",
+  "microsoft.windowsappruntime",
+];
+
+function isFrameworkFileName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return FRAMEWORK_PREFIXES.some((p) => lower.startsWith(p));
+}
+
+function isBundleFileName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower.endsWith(".appxbundle") ||
+    lower.endsWith(".msixbundle") ||
+    lower.endsWith(".eappxbundle") ||
+    lower.endsWith(".emsixbundle")
+  );
+}
+
+/** Files that aren't end-user installable: the AppxBlockMap.xml manifest
+ *  and DRM-encrypted `.eappx*` / `.emsix*` variants. These tag along with
+ *  every package response but should never be the default pick — callers
+ *  who really want them can pass `?include=auxiliary`. */
+function isAuxiliaryFileName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower.endsWith(".blockmap") ||
+    lower.endsWith(".eappx") ||
+    lower.endsWith(".eappxbundle") ||
+    lower.endsWith(".emsix") ||
+    lower.endsWith(".emsixbundle")
+  );
+}
+
+function archFromFileName(name: string): "x64" | "arm64" | "x86" | "neutral" | "unknown" {
+  if (/_x64[._]/i.test(name)) return "x64";
+  if (/_arm64[._]/i.test(name)) return "arm64";
+  if (/_x86[._]/i.test(name)) return "x86";
+  if (/_neutral[._]/i.test(name)) return "neutral";
+  return "unknown";
+}
+
+function archRank(arch: ReturnType<typeof archFromFileName>): number {
+  switch (arch) {
+    case "x64":
+      return 0;
+    case "arm64":
+      return 1;
+    case "x86":
+      return 2;
+    case "neutral":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+interface DownloadQuery {
+  type?: string;
+  arch?: "x64" | "arm64" | "x86" | "neutral";
+  market?: string;
+  lang?: string;
+  match?: RegExp;
+  matchRaw?: string;
+  include: { framework: boolean; auxiliary: boolean };
+  n: number;
+  proxy: boolean;
+  format: "redirect" | "json" | "auto";
+}
+
+function parseDownloadQuery(
+  url: URL,
+): { ok: true; query: DownloadQuery } | { ok: false; error: ApiCode } {
+  const sp = url.searchParams;
+  const archRaw = sp.get("arch");
+  let arch: DownloadQuery["arch"];
+  if (archRaw) {
+    const a = archRaw.toLowerCase();
+    if (a === "x64" || a === "arm64" || a === "x86" || a === "neutral") arch = a;
+    else return { ok: false, error: code("download.badArch", { raw: archRaw }) };
+  }
+
+  const includeRaw = (sp.get("include") ?? "").toLowerCase();
+  const includeParts = new Set(includeRaw.split(/[,\s]+/).filter(Boolean));
+
+  let match: RegExp | undefined;
+  const matchRaw = sp.get("match") ?? undefined;
+  if (matchRaw) {
+    try {
+      match = new RegExp(matchRaw, "i");
+    } catch (e) {
+      return { ok: false, error: code("download.badRegex", { raw: matchRaw, detail: String(e) }) };
+    }
+  }
+
+  const nRaw = sp.get("n");
+  const nParsed = nRaw == null ? 0 : Number(nRaw);
+  if (nRaw != null && (!Number.isInteger(nParsed) || nParsed < 0)) {
+    return { ok: false, error: code("download.badN", { raw: nRaw }) };
+  }
+
+  const formatRaw = (sp.get("format") ?? "auto").toLowerCase();
+  let format: DownloadQuery["format"];
+  if (formatRaw === "auto" || formatRaw === "redirect" || formatRaw === "json") format = formatRaw;
+  else return { ok: false, error: code("download.badFormat", { raw: formatRaw }) };
+
+  const proxyRaw = (sp.get("proxy") ?? "").toLowerCase();
+  const proxy = proxyRaw === "1" || proxyRaw === "true" || proxyRaw === "yes";
+
+  return {
+    ok: true,
+    query: {
+      type: sp.get("type") ?? undefined,
+      arch,
+      market: sp.get("market") ?? undefined,
+      lang: sp.get("lang") ?? sp.get("locale") ?? undefined,
+      match,
+      matchRaw,
+      include: {
+        framework:
+          includeParts.has("framework") ||
+          includeParts.has("frameworks") ||
+          includeParts.has("all"),
+        auxiliary:
+          includeParts.has("auxiliary") ||
+          includeParts.has("aux") ||
+          includeParts.has("blockmap") ||
+          includeParts.has("encrypted") ||
+          includeParts.has("all"),
+      },
+      n: nParsed,
+      proxy,
+      format,
+    },
+  };
+}
+
+interface Candidate {
+  item: DownloadItem;
+  arch: ReturnType<typeof archFromFileName>;
+  isBundle: boolean;
+  isFramework: boolean;
+  isAuxiliary: boolean;
+  sizeBytes: number;
+}
+
+function buildCandidates(items: DownloadItem[]): Candidate[] {
+  return items.map((item) => {
+    const name = item.FileName ?? "";
+    const sizeBytes = sizeStringToBytes(item.FileSize ?? "");
+    return {
+      item,
+      arch: archFromFileName(name),
+      isBundle: isBundleFileName(name),
+      isFramework: isFrameworkFileName(name),
+      isAuxiliary: isAuxiliaryFileName(name),
+      sizeBytes,
+    };
+  });
+}
+
+function sizeStringToBytes(s: string): number {
+  const m = s.trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB|PB)?/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  const u = (m[2] ?? "B").toUpperCase();
+  const factor: Record<string, number> = {
+    B: 1,
+    KB: 1024,
+    MB: 1024 ** 2,
+    GB: 1024 ** 3,
+    TB: 1024 ** 4,
+    PB: 1024 ** 5,
+  };
+  return n * (factor[u] ?? 1);
+}
+
+function selectCandidates(all: Candidate[], q: DownloadQuery): Candidate[] {
+  let pool = all.filter((c) => c.item.FileLink);
+  if (!q.include.framework) pool = pool.filter((c) => !c.isFramework);
+  if (!q.include.auxiliary) pool = pool.filter((c) => !c.isAuxiliary);
+  if (q.match) pool = pool.filter((c) => q.match!.test(c.item.FileName ?? ""));
+  if (q.arch) pool = pool.filter((c) => c.arch === q.arch);
+
+  pool.sort((a, b) => {
+    if (a.isBundle !== b.isBundle) return a.isBundle ? -1 : 1;
+    const ra = archRank(a.arch);
+    const rb = archRank(b.arch);
+    if (ra !== rb) return ra - rb;
+    return b.sizeBytes - a.sizeBytes;
+  });
+
+  return pool;
+}
+
+/** Build a `Content-Disposition` value with both the plain and RFC 5987
+ *  encoded filename, so non-ASCII characters survive intermediate proxies. */
+function contentDisposition(fileName: string): string {
+  // Strip path separators and control chars for safety. The control-char
+  // range is intentional — eslint flags it but that's exactly what we want.
+  // eslint-disable-next-line no-control-regex
+  const safe = fileName.replace(/[\\/\x00-\x1f]/g, "_");
+  const ascii = safe.replace(/[^\x20-\x7e]/g, "_");
+  const encoded = encodeURIComponent(safe);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+function wantsHtml(req: Request): boolean {
+  return (req.headers.get("accept") ?? "").toLowerCase().includes("text/html");
+}
+
+function wantsJsonByHeader(req: Request): boolean {
+  const a = (req.headers.get("accept") ?? "").toLowerCase();
+  // Only honour an explicit JSON preference, not a wildcard.
+  return a.includes("application/json") && !a.includes("text/html");
+}
+
+function downloadErrorResponse(
+  req: Request,
+  url: URL,
+  status: number,
+  errCode: ApiCode,
+  query: DownloadQuery | null = null,
+  extra: Record<string, unknown> | null = null,
+): Response {
+  const body = {
+    ...asErrors([errCode]),
+    Code: status,
+    ...(extra ? { Debug: extra } : {}),
+  };
+  // HTML-preferring clients (browsers clicking a stale share link) get
+  // bounced into the SPA with `?error=<code>&id=<id>` so the UI can render
+  // a friendly failure rather than a JSON blob. JSON callers / curl
+  // see the structured body.
+  if (query?.format !== "json" && wantsHtml(req) && !wantsJsonByHeader(req)) {
+    const spa = new URL("/", url);
+    spa.searchParams.set("error", errCode.code);
+    if (query?.matchRaw) spa.searchParams.set("match", query.matchRaw);
+    const fwd = url.pathname.split("/").pop() ?? "";
+    if (fwd) spa.searchParams.set("id", decodeURIComponent(fwd));
+    const res = new Response(null, {
+      status: 303,
+      headers: { location: spa.toString(), "cache-control": "no-store" },
+    });
+    return res;
+  }
+  return json(body, status);
+}
+
+const DOWNLOAD_PATH_RE = /^\/(?:d|download|installer\/download)\/[^/?#]+\/?$/i;
+
+/** True when `pathname` is a download-permalink URL shape. Used at the
+ *  routing layer to gate the handler above the static-asset fallback so
+ *  a typo'd id doesn't end up serving the SPA shell. */
+function isDownloadPermalink(pathname: string): boolean {
+  return DOWNLOAD_PATH_RE.test(pathname);
+}
+
+/** Parse the id out of the request path. Supports `/d/<id>`,
+ *  `/download/<id>`, `/installer/download/<id>`. Returns `null` when the
+ *  path doesn't match. The id is URI-decoded. */
+function parseDownloadPath(pathname: string): string | null {
+  const m = pathname.match(/^\/(?:d|download|installer\/download)\/(.+?)\/?$/i);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
+
+async function handleDownload(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const id = parseDownloadPath(url.pathname);
+  if (!id) {
+    return json({ ...asErrors([code("route.notFound", { path: url.pathname })]), Code: 404 }, 404);
+  }
+
+  if (isApiDisabled(env)) {
+    return json({ ...asErrors([code("apiDisabled")]), Code: 503 }, 503);
+  }
+
+  const parsed = parseDownloadQuery(url);
+  if (!parsed.ok) {
+    return downloadErrorResponse(request, url, 400, parsed.error);
+  }
+  const query = parsed.query;
+
+  // Detect identifier type if the caller didn't pin one. Detection is a
+  // best-effort shape match; ambiguous inputs default to ProductId, which
+  // matches the SPA's own behaviour.
+  const idType: string = query.type ?? detectIdentifierType(id) ?? "ProductId";
+
+  const body: ResolveAllRequest = {
+    ProductInput: id,
+    IdentifierType: idType as ResolveAllRequest["IdentifierType"],
+    Market: query.market,
+    LanguageTag: query.lang,
+  };
+
+  let result: ResolveAllResponse;
+  try {
+    const ac = new AbortController();
+    request.signal?.addEventListener("abort", () => ac.abort(), { once: true });
+    const dispatched = await resolveProduct(id, body, ac.signal);
+    result = dispatched.result;
+  } catch (e) {
+    console.error("download dispatch uncaught:", e);
+    return downloadErrorResponse(
+      request,
+      url,
+      500,
+      code("internal.error", { detail: String(e) }),
+      query,
+      { kind: errKind(e), causes: errCauses(e) },
+    );
+  }
+
+  if (result.ErrorCodes?.length) {
+    const errCode = result.ErrorCodes[0];
+    const status = errCode.code === "product.notFound" ? 404 : 502;
+    return downloadErrorResponse(request, url, status, errCode, query, result.Debug ?? null);
+  }
+
+  const items = [...(result.AppxPackages ?? []), ...(result.NonAppxPackages ?? [])];
+  if (items.length === 0) {
+    return downloadErrorResponse(
+      request,
+      url,
+      404,
+      code("download.noLinks"),
+      query,
+      result.Debug ?? null,
+    );
+  }
+
+  const candidates = selectCandidates(buildCandidates(items), query);
+  if (candidates.length === 0) {
+    return downloadErrorResponse(
+      request,
+      url,
+      404,
+      code("download.noMatch", {
+        arch: query.arch ?? "",
+        match: query.matchRaw ?? "",
+      }),
+      query,
+      { totalItems: items.length, totalCandidates: candidates.length },
+    );
+  }
+
+  if (query.n >= candidates.length) {
+    return downloadErrorResponse(
+      request,
+      url,
+      404,
+      code("download.indexOutOfRange", { n: query.n, total: candidates.length }),
+      query,
+    );
+  }
+
+  const picked = candidates[query.n];
+
+  // JSON mode: caller asked for the picked candidate as a JSON blob (so
+  // they can render their own UI, integrate into a script, etc).
+  const wantJson =
+    query.format === "json" || (query.format === "auto" && wantsJsonByHeader(request));
+  if (wantJson) {
+    return json({
+      Picked: {
+        FileName: picked.item.FileName,
+        FileLink: picked.item.FileLink,
+        FileSize: picked.item.FileSize,
+        Sha256: picked.item.Sha256,
+        Arch: picked.arch,
+        IsBundle: picked.isBundle,
+        IsFramework: picked.isFramework,
+        IsAuxiliary: picked.isAuxiliary,
+      },
+      Candidates: candidates.map((c, i) => ({
+        Index: i,
+        FileName: c.item.FileName,
+        FileLink: c.item.FileLink,
+        FileSize: c.item.FileSize,
+        Sha256: c.item.Sha256,
+        Arch: c.arch,
+        IsBundle: c.isBundle,
+        IsFramework: c.isFramework,
+        IsAuxiliary: c.isAuxiliary,
+      })),
+      AppInfo: result.AppInfo ?? null,
+      Query: {
+        id,
+        type: idType,
+        market: query.market ?? null,
+        lang: query.lang ?? null,
+        arch: query.arch ?? null,
+        match: query.matchRaw ?? null,
+        include: query.include,
+        n: query.n,
+      },
+    });
+  }
+
+  // Proxy mode: fetch the binary server-side and stream it back. Hides the
+  // FE3 URL from the client and bypasses firewalls that block
+  // `*.dl.delivery.mp.microsoft.com`. Cloudflare Workers will tee the body
+  // through without buffering.
+  if (query.proxy) {
+    let upstream: Response;
+    try {
+      upstream = await fetch(picked.item.FileLink, { redirect: "follow" });
+    } catch (e) {
+      return downloadErrorResponse(
+        request,
+        url,
+        502,
+        code("download.proxyFailed", { detail: String(e) }),
+        query,
+      );
+    }
+    if (!upstream.ok) {
+      return downloadErrorResponse(
+        request,
+        url,
+        upstream.status === 404 ? 404 : 502,
+        code("download.proxyUpstream", { status: upstream.status }),
+        query,
+      );
+    }
+    const headers = new Headers();
+    const ct = upstream.headers.get("content-type");
+    if (ct) headers.set("content-type", ct);
+    const cl = upstream.headers.get("content-length");
+    if (cl) headers.set("content-length", cl);
+    const ar = upstream.headers.get("accept-ranges");
+    if (ar) headers.set("accept-ranges", ar);
+    headers.set("content-disposition", contentDisposition(picked.item.FileName ?? "package.appx"));
+    headers.set("cache-control", "private, max-age=300");
+    headers.set("x-qsl-source", "fe3-proxy");
+    return new Response(upstream.body, { status: 200, headers });
+  }
+
+  // Default: 302 redirect to FE3's signed URL. The URL is time-limited
+  // (FE3 bakes auth into the query string), so we set `no-store` to
+  // discourage intermediate caching that would serve a stale token.
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: picked.item.FileLink,
+      "cache-control": "no-store",
+      "x-qsl-picked": picked.item.FileName ?? "",
+      "x-qsl-arch": picked.arch,
+      "x-qsl-candidates": String(candidates.length),
+    },
+  });
+}
+
 const CORS_HEADERS: HeadersInit = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
@@ -908,6 +1414,14 @@ export default {
         { ...asErrors([code("route.notFound", { path: url.pathname })]), Code: 404 },
         404,
       );
+    } else if (isDownloadPermalink(url.pathname)) {
+      // GET-only permalink endpoint — gated above the asset-binding fallback
+      // so `/download/<id>` doesn't accidentally serve the SPA shell.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response = json({ ...asErrors([code("method.notAllowed")]), Code: 405 }, 405);
+      } else {
+        response = await handleDownload(request, env);
+      }
     } else {
       // Asset responses are same-origin and have immutable headers — return
       // them directly without applying CORS.

@@ -95,6 +95,17 @@ export const API_CODE_MESSAGES_EN: Record<string, string> = {
   "client.noDownloadLinks": "No download links returned for this identifier.",
   "client.httpError": "Backend returned HTTP {status}",
   "client.emptyBody": "Backend returned an empty body.",
+  "download.badArch": 'Unknown architecture "{raw}". Use x64, arm64, x86, or neutral.',
+  "download.badRegex": 'Invalid match regex "{raw}": {detail}',
+  "download.badN": 'Invalid index "{raw}". Must be a non-negative integer.',
+  "download.badFormat": 'Unknown format "{raw}". Use auto, redirect, or json.',
+  "download.noLinks": "No download links found for this identifier.",
+  "download.noMatch":
+    "No package matched the filters (arch={arch}, match={match}). Try removing constraints.",
+  "download.indexOutOfRange":
+    "Requested index n={n} but only {total} candidate(s) remain after filtering.",
+  "download.proxyFailed": "Proxy fetch failed: {detail}",
+  "download.proxyUpstream": "Upstream returned HTTP {status} while proxying the download.",
   // Fallback used when a frontend reads an older worker that only emits the
   // legacy `Errors: string[]`. The message itself is the param.
   legacy: "{message}",
@@ -288,6 +299,88 @@ export function versionAtLeast(version: string | null | undefined, target: strin
 
 export function supportsWuCategoryId(workerVersion: string | null | undefined): boolean {
   return versionAtLeast(workerVersion, MIN_WU_CATEGORY_ID_WORKER_VERSION);
+}
+
+/** Worker package.json version that first added the `/download/<id>`
+ *  (and `/d/<id>`, `/installer/download/<id>`) permalink endpoint. */
+export const MIN_DOWNLOAD_PERMALINK_WORKER_VERSION = "0.1.2";
+
+export function supportsDownloadPermalink(workerVersion: string | null | undefined): boolean {
+  return versionAtLeast(workerVersion, MIN_DOWNLOAD_PERMALINK_WORKER_VERSION);
+}
+
+/** Path styles the worker accepts for the download permalink. */
+export type PermalinkPathStyle = "d" | "download" | "installerDownload";
+
+export interface PermalinkOptions {
+  pathStyle: PermalinkPathStyle;
+  /** Architecture filter. Empty string = any (omitted from URL). */
+  arch: "" | "x64" | "arm64" | "x86" | "neutral";
+  /** Regex applied case-insensitively to the FileName. */
+  match: string;
+  /** Index into the filtered+sorted candidate list. */
+  n: number;
+  includeFramework: boolean;
+  /** Include `.BlockMap`, `.eappx*`, `.emsix*` files in the candidate pool.
+   *  Default false — these aren't end-user installable. */
+  includeAuxiliary: boolean;
+  format: "auto" | "redirect" | "json";
+  proxy: boolean;
+  /** When true, append `?market=` and `?lang=` to the URL. */
+  overrideLocale: boolean;
+  market: string;
+  lang: string;
+}
+
+export const DEFAULT_PERMALINK_OPTIONS: PermalinkOptions = {
+  pathStyle: "download",
+  arch: "",
+  match: "",
+  n: 0,
+  includeFramework: false,
+  includeAuxiliary: false,
+  format: "auto",
+  proxy: false,
+  overrideLocale: false,
+  market: "US",
+  lang: "en-US",
+};
+
+/** Build a download-permalink URL from the search id + builder options.
+ *  Returns an empty string when `id` is empty (no link to share yet). */
+export function buildPermalink(
+  origin: string,
+  id: string,
+  identifierType: IdentifierType,
+  opts: PermalinkOptions,
+): string {
+  if (!id) return "";
+  const path =
+    opts.pathStyle === "d"
+      ? "/d/"
+      : opts.pathStyle === "installerDownload"
+        ? "/installer/download/"
+        : "/download/";
+  const sp = new URLSearchParams();
+  if (identifierType !== "ProductId") sp.set("type", identifierType);
+  if (opts.arch) sp.set("arch", opts.arch);
+  if (opts.match) sp.set("match", opts.match);
+  if (opts.n > 0) sp.set("n", String(opts.n));
+  const includes: string[] = [];
+  if (opts.includeFramework) includes.push("framework");
+  if (opts.includeAuxiliary) includes.push("auxiliary");
+  if (includes.length > 0) sp.set("include", includes.join(","));
+  if (opts.format !== "auto") sp.set("format", opts.format);
+  if (opts.proxy) sp.set("proxy", "true");
+  if (opts.overrideLocale) {
+    if (opts.market) sp.set("market", opts.market);
+    if (opts.lang) sp.set("lang", opts.lang);
+  }
+  const q = sp.toString();
+  // The id needs URI encoding so PFNs and GUIDs survive intermediate
+  // proxies, but `/` and other reserved chars don't appear in any
+  // Microsoft Store identifier so a single encodeURIComponent is sufficient.
+  return `${origin}${path}${encodeURIComponent(id)}${q ? `?${q}` : ""}`;
 }
 
 export function detectIdentifierType(raw: string): IdentifierType | null {

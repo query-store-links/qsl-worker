@@ -25,6 +25,7 @@ import {
   ErrorCircleRegular,
   InfoRegular,
   KeyboardRegular,
+  LinkRegular,
   SearchRegular,
   ShareRegular,
   ShieldRegular,
@@ -34,8 +35,10 @@ import {
   ID_TYPE_BY_VALUE,
   LOCALES,
   MARKETS,
+  MIN_DOWNLOAD_PERMALINK_WORKER_VERSION,
   RINGS,
   detectIdentifierType,
+  supportsDownloadPermalink,
   supportsWuCategoryId,
   type Ring,
   type SearchFormData,
@@ -50,6 +53,7 @@ interface SearchCardProps {
   onAbort: () => void;
   shareUrl: string;
   onCopyShare: () => void;
+  onOpenPermalink: () => void;
   /** Worker package.json version reported by `/api/_meta`. Used to gate
    *  identifier types that require a worker upgrade (e.g. `WuCategoryId`
    *  needs ≥ 0.1.1). `null` for older deployments that don't expose meta. */
@@ -207,6 +211,7 @@ export function SearchCard({
   onAbort,
   shareUrl,
   onCopyShare,
+  onOpenPermalink,
   workerVersion,
 }: SearchCardProps) {
   const styles = useStyles();
@@ -226,6 +231,7 @@ export function SearchCard({
     () => (wuSupported ? ID_TYPES : ID_TYPES.filter((t) => t.value !== "WuCategoryId")),
     [wuSupported],
   );
+  const permalinkSupported = supportsDownloadPermalink(workerVersion);
   const detectionMatch = detected != null && detected === form.identifierType;
   const detectionMismatch = detected != null && detected !== form.identifierType;
   const meta = ID_TYPE_BY_VALUE[form.identifierType];
@@ -492,6 +498,37 @@ export function SearchCard({
               {t("search.action.share")}
             </Button>
           </Tooltip>
+          {permalinkSupported && (
+            <Tooltip
+              content={
+                form.productInput
+                  ? t("search.action.permalink.tooltip")
+                  : t("search.action.permalink.disabled")
+              }
+              relationship="label"
+            >
+              <Button
+                appearance="outline"
+                icon={<LinkRegular />}
+                onClick={onOpenPermalink}
+                disabled={!form.productInput}
+              >
+                {t("search.action.permalink")}
+              </Button>
+            </Tooltip>
+          )}
+          {!permalinkSupported && workerVersion != null && (
+            <Tooltip
+              content={t("search.action.permalink.unsupported", {
+                version: MIN_DOWNLOAD_PERMALINK_WORKER_VERSION,
+              })}
+              relationship="label"
+            >
+              <Button appearance="outline" icon={<LinkRegular />} disabled>
+                {t("search.action.permalink")}
+              </Button>
+            </Tooltip>
+          )}
           <Button
             appearance="primary"
             icon={loading ? undefined : <ArrowRightRegular />}

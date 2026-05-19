@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Divider,
@@ -209,9 +209,15 @@ export function TopBar({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<AppSettings>(settings);
 
-  useEffect(() => {
+  // Sync draft from settings on the drawer's closed→open transition
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes).
+  // Tracking `open`'s previous value via useState keeps the once-per-open
+  // semantics while satisfying react-hooks/set-state-in-effect + …/refs.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) setDraft(settings);
-  }, [open, settings]);
+  }
 
   const apply = () => {
     setSettings(draft);

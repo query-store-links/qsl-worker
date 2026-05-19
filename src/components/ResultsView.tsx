@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Badge,
   Body1Strong,
@@ -247,7 +247,13 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
   const [sortKey, setSortKey] = useState<SortKey>("size");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  useEffect(() => setSelected(new Set()), [results]);
+  // Reset selection in-render when `results` identity changes
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes).
+  const [prevResults, setPrevResults] = useState(results);
+  if (prevResults !== results) {
+    setPrevResults(results);
+    setSelected(new Set());
+  }
 
   const filtered = useMemo(() => {
     let out = results;

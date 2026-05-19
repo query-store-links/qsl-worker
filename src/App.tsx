@@ -30,6 +30,7 @@ import { ResultsView } from "./components/ResultsView";
 import { HistoryDrawer, type HistoryItem } from "./components/HistoryDrawer";
 import { DebugPanel } from "./components/DebugPanel";
 import { NotFoundPage } from "./components/NotFoundPage";
+import { PermalinkBuilder } from "./components/PermalinkBuilder";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { useLocalState } from "./hooks";
 import { translateApiCode, useT } from "./i18n";
@@ -247,12 +248,17 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
   const [debug, setDebug] = useState<Record<string, unknown> | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showPermalink, setShowPermalink] = useState(false);
   const [apiDisabled, setApiDisabled] = useState(false);
   const [backendMeta, setBackendMeta] = useState<WorkerMeta | null>(null);
   const [thirdPartyAck, setThirdPartyAck] = useLocalState<string[]>("qsl_trusted_backends", []);
   const [unofficialAck, setUnofficialAck] = useLocalState<string[]>("qsl_unofficial_ui_ack", []);
+  // Starts as "checking" so the initial backend probe doesn't flash "unknown"
+  // in the pill before the network call resolves. The cross-backend reset to
+  // "checking" lives below in an in-render hook so it doesn't violate
+  // react-hooks/set-state-in-effect.
   const [backendHealth, setBackendHealth] = useState<"unknown" | "checking" | "ok" | "down">(
-    "unknown",
+    "checking",
   );
   const abortRef = useRef<AbortController | null>(null);
 
@@ -388,10 +394,19 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const ac = new AbortController();
+  // Reset the health-pill state synchronously when the backend URL changes
+  // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes).
+  // Stored as useState rather than useRef so react-hooks/refs is happy with
+  // the in-render compare-and-set.
+  const [prevBackend, setPrevBackend] = useState(settings.backend);
+  if (prevBackend !== settings.backend) {
+    setPrevBackend(settings.backend);
     setBackendHealth("checking");
     setBackendMeta(null);
+  }
+
+  useEffect(() => {
+    const ac = new AbortController();
     if (settings.backend) {
       // Try a CORS-enabled meta read first so we can surface the version.
       // If the backend doesn't expose CORS (or _meta is absent), fall back
@@ -566,6 +581,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
             onAbort={() => abortRef.current?.abort()}
             shareUrl={shareUrl}
             onCopyShare={copyShare}
+            onOpenPermalink={() => setShowPermalink(true)}
             workerVersion={backendMeta?.version ?? null}
           />
         </div>
@@ -737,6 +753,13 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         }}
         onClear={() => setHistory([])}
         onRemove={(id) => setHistory((p) => p.filter((h) => h.id !== id))}
+      />
+
+      <PermalinkBuilder
+        open={showPermalink}
+        onDismiss={() => setShowPermalink(false)}
+        form={form}
+        onCopy={onCopy}
       />
 
       <Toaster toasterId={toasterId} position="bottom-end" />
