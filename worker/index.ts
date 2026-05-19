@@ -1042,9 +1042,10 @@ function sizeStringToBytes(s: string): number {
 }
 
 function selectCandidates(all: Candidate[], q: DownloadQuery): Candidate[] {
+  // Note: auxiliary (`.BlockMap` / `.eappx*` / `.emsix*`) exclusion happens
+  // upstream in `handleDownload` so those items never reach this function.
   let pool = all.filter((c) => c.item.FileLink);
   if (!q.include.framework) pool = pool.filter((c) => !c.isFramework);
-  if (!q.include.auxiliary) pool = pool.filter((c) => !c.isAuxiliary);
   if (q.match) pool = pool.filter((c) => q.match!.test(c.item.FileName ?? ""));
   if (q.arch) pool = pool.filter((c) => c.arch === q.arch);
 
@@ -1188,8 +1189,8 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
     return downloadErrorResponse(request, url, status, errCode, query, result.Debug ?? null);
   }
 
-  const items = [...(result.AppxPackages ?? []), ...(result.NonAppxPackages ?? [])];
-  if (items.length === 0) {
+  const rawItems = [...(result.AppxPackages ?? []), ...(result.NonAppxPackages ?? [])];
+  if (rawItems.length === 0) {
     return downloadErrorResponse(
       request,
       url,
@@ -1199,6 +1200,13 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
       result.Debug ?? null,
     );
   }
+
+  // Drop `.BlockMap` / `.eappx*` / `.emsix*` files at the items level — they
+  // aren't installable, so there's no point computing candidate metadata or
+  // running the sort/pick logic on them. `?include=auxiliary` opts back in.
+  const items = query.include.auxiliary
+    ? rawItems
+    : rawItems.filter((item) => !isAuxiliaryFileName(item.FileName ?? ""));
 
   const candidates = selectCandidates(buildCandidates(items), query);
   if (candidates.length === 0) {
