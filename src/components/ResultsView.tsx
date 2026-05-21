@@ -90,8 +90,20 @@ const useStyles = makeStyles({
     justifyContent: "space-between",
     columnGap: "12px",
     rowGap: "12px",
+    "@media (max-width: 600px)": {
+      padding: "12px 16px",
+    },
   },
-  headLeft: { minWidth: 0, flex: 1 },
+  // On narrow viewports force `headLeft` onto its own row so the 220px filter
+  // input drops below the title block instead of squeezing the Category chip
+  // into a 4-line ID stack.
+  headLeft: {
+    minWidth: 0,
+    flex: 1,
+    "@media (max-width: 600px)": {
+      flexBasis: "100%",
+    },
+  },
   headTitle: { display: "flex", alignItems: "center", columnGap: "8px" },
   query: {
     fontSize: "12px",
@@ -111,6 +123,9 @@ const useStyles = makeStyles({
     position: "sticky",
     top: "56px",
     zIndex: 3,
+    "@media (max-width: 600px)": {
+      padding: "0 12px",
+    },
   },
   tabLabel: { display: "inline-flex", alignItems: "center", columnGap: "6px" },
   bulkBar: {
@@ -118,14 +133,19 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorBrandBackground2,
     borderBottom: `1px solid ${tokens.colorBrandStroke2}`,
     display: "flex",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     columnGap: "12px",
+    rowGap: "8px",
     // Sticks under TopBar (56) + tab strip (~42) so Copy / Download stays
     // reachable when many rows are selected.
     position: "sticky",
     top: "98px",
     zIndex: 2,
+    "@media (max-width: 600px)": {
+      padding: "8px 12px",
+    },
   },
   bulkLeft: {
     fontSize: "13px",
@@ -191,12 +211,23 @@ const useStyles = makeStyles({
     padding: "1px 6px",
     backgroundColor: "transparent",
     fontFamily: "inherit",
+    // Cap the chip at its container so a long GUID truncates instead of
+    // wrapping the value across multiple lines on narrow viewports.
+    maxWidth: "100%",
+    minWidth: 0,
+    overflow: "hidden",
     "&:hover": {
       backgroundColor: tokens.colorNeutralBackground1Hover,
       color: tokens.colorNeutralForeground2,
     },
   },
-  metaLabel: { color: tokens.colorNeutralForeground4 },
+  metaLabel: { color: tokens.colorNeutralForeground4, flexShrink: 0 },
+  metaValue: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
   verifyBtn: {
     display: "inline-flex",
     alignItems: "center",
@@ -233,9 +264,67 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     display: "block",
   },
-  filterInputWrap: { width: "220px" },
-  ckShellLeft: { paddingLeft: "20px" },
-  ckShellRight: { paddingRight: "20px" },
+  filterInputWrap: {
+    width: "220px",
+    "@media (max-width: 600px)": {
+      width: "100%",
+    },
+  },
+  ckShellLeft: {
+    paddingLeft: "20px",
+    "@media (max-width: 600px)": {
+      paddingLeft: "12px",
+    },
+  },
+  ckShellRight: {
+    paddingRight: "20px",
+    "@media (max-width: 600px)": {
+      paddingRight: "12px",
+    },
+  },
+  // Column-width classes — kept here (rather than inline `style`) so the
+  // media queries below can actually override them on phones.
+  colCheck: {
+    width: "56px",
+    "@media (max-width: 600px)": { width: "44px" },
+  },
+  colName: {
+    minWidth: "280px",
+    "@media (max-width: 600px)": { minWidth: 0, width: "auto" },
+  },
+  colType: {
+    width: "110px",
+    "@media (max-width: 600px)": { display: "none" },
+  },
+  colArch: {
+    width: "90px",
+    "@media (max-width: 600px)": { display: "none" },
+  },
+  colSize: {
+    width: "110px",
+    "@media (max-width: 600px)": { width: "72px" },
+  },
+  colActions: {
+    width: "130px",
+    "@media (max-width: 600px)": { width: "96px" },
+  },
+  // Inline Type+Arch meta shown under the file name on mobile only, since
+  // those columns are hidden to free space for the name.
+  mobileMeta: {
+    display: "none",
+    "@media (max-width: 600px)": {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      columnGap: "6px",
+      rowGap: "4px",
+      marginTop: "4px",
+    },
+  },
+  mobileArchText: {
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+  },
 });
 
 export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProps) {
@@ -381,7 +470,7 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
                 aria-label={t("results.category.copy")}
               >
                 <span className={styles.metaLabel}>{t("results.category.label")}</span>
-                <span>{appInfo.CategoryId}</span>
+                <span className={styles.metaValue}>{appInfo.CategoryId}</span>
                 <CopyRegular fontSize={11} />
               </button>
             </Tooltip>
@@ -467,8 +556,11 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
           <TableHeader>
             <TableRow>
               <TableHeaderCell
-                className={mergeClasses(styles.ckShellLeft, styles.stickyHeaderCell)}
-                style={{ width: 56 }}
+                className={mergeClasses(
+                  styles.ckShellLeft,
+                  styles.stickyHeaderCell,
+                  styles.colCheck,
+                )}
               >
                 <Checkbox
                   checked={allSelected}
@@ -478,37 +570,36 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("name")}
-                className={styles.stickyHeaderCell}
-                style={{ minWidth: 280 }}
+                className={mergeClasses(styles.stickyHeaderCell, styles.colName)}
               >
                 {t("results.table.fileName")}
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("type")}
-                className={styles.stickyHeaderCell}
-                style={{ width: 110 }}
+                className={mergeClasses(styles.stickyHeaderCell, styles.colType)}
               >
                 {t("results.table.type")}
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("arch")}
-                className={styles.stickyHeaderCell}
-                style={{ width: 90 }}
+                className={mergeClasses(styles.stickyHeaderCell, styles.colArch)}
               >
                 {t("results.table.arch")}
               </TableHeaderCell>
               <TableHeaderCell
                 {...sortableProps("size")}
-                className={styles.stickyHeaderCell}
-                style={{ width: 110 }}
+                className={mergeClasses(styles.stickyHeaderCell, styles.colSize)}
               >
                 <Text className={styles.numCell} block>
                   {t("results.table.size")}
                 </Text>
               </TableHeaderCell>
               <TableHeaderCell
-                className={mergeClasses(styles.ckShellRight, styles.stickyHeaderCell)}
-                style={{ width: 130 }}
+                className={mergeClasses(
+                  styles.ckShellRight,
+                  styles.stickyHeaderCell,
+                  styles.colActions,
+                )}
               >
                 <Text className={styles.actionsCell} block>
                   {t("results.table.actions")}
@@ -570,14 +661,14 @@ function ResultRow({
 
   return (
     <TableRow className={selected ? styles.rowSelected : undefined}>
-      <TableCell className={styles.ckShellLeft}>
+      <TableCell className={mergeClasses(styles.ckShellLeft, styles.colCheck)}>
         <Checkbox
           checked={selected}
           onChange={onToggle}
           aria-label={t("results.table.selectOne", { name: item.name })}
         />
       </TableCell>
-      <TableCell style={{ minWidth: 0 }}>
+      <TableCell className={styles.colName} style={{ minWidth: 0 }}>
         <TableCellLayout
           truncate
           media={
@@ -588,6 +679,12 @@ function ResultRow({
             <Text className={`qsl-mono ${styles.nameText}`} title={item.name}>
               {item.name}
             </Text>
+            <div className={styles.mobileMeta}>
+              <Badge appearance="tint" color={badgeColor} size="small">
+                {item.type}
+              </Badge>
+              <Text className={`qsl-mono ${styles.mobileArchText}`}>{item.arch ?? "—"}</Text>
+            </div>
             {item.sha256 && (
               <div className={styles.hashLine}>
                 <Tooltip
@@ -657,20 +754,20 @@ function ResultRow({
           </div>
         </TableCellLayout>
       </TableCell>
-      <TableCell>
+      <TableCell className={styles.colType}>
         <Badge appearance="tint" color={badgeColor}>
           {item.type}
         </Badge>
       </TableCell>
-      <TableCell>
+      <TableCell className={styles.colArch}>
         <Text className={`qsl-mono ${styles.archCell}`}>{item.arch ?? "—"}</Text>
       </TableCell>
-      <TableCell>
+      <TableCell className={styles.colSize}>
         <Text className={styles.numCell} block>
           {item.size}
         </Text>
       </TableCell>
-      <TableCell className={styles.ckShellRight}>
+      <TableCell className={mergeClasses(styles.ckShellRight, styles.colActions)}>
         <span className={styles.actionGroup}>
           <Tooltip content={t("results.row.copyUrl")} relationship="label">
             <Button
