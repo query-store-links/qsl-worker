@@ -7,6 +7,13 @@ import {
   Caption1,
   Checkbox,
   CounterBadge,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
+  DialogTrigger,
   Input,
   Menu,
   MenuItem,
@@ -34,6 +41,7 @@ import {
   DismissRegular,
   DocumentRegular,
   FilterRegular,
+  FingerprintRegular,
   OpenRegular,
   WindowConsoleRegular,
 } from "@fluentui/react-icons";
@@ -44,25 +52,31 @@ type FilterKey = "all" | PackageType;
 type SortKey = "name" | "size" | "type" | "arch";
 
 type Shell = "powershell" | "cmd" | "bash";
+type HashAlgo = "sha256" | "sha1";
 
-function buildVerifyCommand(shell: Shell, file: string, hash: string): string {
+function buildVerifyCommand(shell: Shell, algo: HashAlgo, file: string, hash: string): string {
+  // Get-FileHash / certutil want the wire-style label (SHA256 / SHA1);
+  // sha*sum is two separate binaries.
+  const psAlgo = algo === "sha256" ? "SHA256" : "SHA1";
+  const certutilAlgo = psAlgo;
+  const sumBin = algo === "sha256" ? "sha256sum" : "sha1sum";
   switch (shell) {
     case "powershell": {
       // Single-quoted PS strings escape an embedded quote by doubling it.
       const f = file.replace(/'/g, "''");
-      return `if ((Get-FileHash -Algorithm SHA256 '${f}').Hash -ieq '${hash}') { 'OK' } else { 'MISMATCH' }`;
+      return `if ((Get-FileHash -Algorithm ${psAlgo} '${f}').Hash -ieq '${hash}') { 'OK' } else { 'MISMATCH' }`;
     }
     case "cmd": {
       // CMD has no general escape for `"` inside quoted args; doubling works
       // for most consumers and is the convention certutil accepts.
       const f = file.replace(/"/g, '""');
-      return `certutil -hashfile "${f}" SHA256 | find /i "${hash}" >NUL && echo OK || echo MISMATCH`;
+      return `certutil -hashfile "${f}" ${certutilAlgo} | find /i "${hash}" >NUL && echo OK || echo MISMATCH`;
     }
     case "bash": {
-      // sha256sum -c expects "<hash><space><space><file>"; close the single
+      // sha*sum -c expects "<hash><space><space><file>"; close the single
       // quote, insert an escaped literal, and re-open for any `'` in the name.
       const f = file.replace(/'/g, "'\\''");
-      return `echo '${hash}  ${f}' | sha256sum -c -`;
+      return `echo '${hash}  ${f}' | ${sumBin} -c -`;
     }
   }
 }
@@ -90,19 +104,15 @@ const useStyles = makeStyles({
     justifyContent: "space-between",
     columnGap: "12px",
     rowGap: "12px",
-    "@media (max-width: 600px)": {
-      padding: "12px 16px",
-    },
+    "@media (max-width: 600px)": { padding: "12px 16px" },
   },
-  // On narrow viewports force `headLeft` onto its own row so the 220px filter
-  // input drops below the title block instead of squeezing the Category chip
-  // into a 4-line ID stack.
+  // On narrow viewports take the full row so the 220px filter input below
+  // drops to its own line instead of squeezing the Category chip into a
+  // multi-line GUID stack.
   headLeft: {
     minWidth: 0,
     flex: 1,
-    "@media (max-width: 600px)": {
-      flexBasis: "100%",
-    },
+    "@media (max-width: 600px)": { flexBasis: "100%" },
   },
   headTitle: { display: "flex", alignItems: "center", columnGap: "8px" },
   query: {
@@ -123,9 +133,7 @@ const useStyles = makeStyles({
     position: "sticky",
     top: "56px",
     zIndex: 3,
-    "@media (max-width: 600px)": {
-      padding: "0 12px",
-    },
+    "@media (max-width: 600px)": { padding: "0 12px" },
   },
   tabLabel: { display: "inline-flex", alignItems: "center", columnGap: "6px" },
   bulkBar: {
@@ -143,16 +151,14 @@ const useStyles = makeStyles({
     position: "sticky",
     top: "98px",
     zIndex: 2,
-    "@media (max-width: 600px)": {
-      padding: "8px 12px",
-    },
+    "@media (max-width: 600px)": { padding: "8px 12px" },
   },
   bulkLeft: {
     fontSize: "13px",
     color: tokens.colorBrandForeground1,
     fontWeight: 600,
   },
-  bulkRight: { display: "flex", columnGap: "8px" },
+  bulkRight: { display: "flex", flexWrap: "wrap", columnGap: "8px", rowGap: "4px" },
   tableWrap: { overflowX: "auto" },
   // Sticky offset is relative to the nearest scroll container — `tableWrap`
   // becomes one because of `overflow-x: auto` (browsers promote the other
@@ -183,6 +189,9 @@ const useStyles = makeStyles({
     columnGap: "6px",
     marginTop: "2px",
     alignSelf: "flex-start",
+    // Inline hash chips don't fit on phones — the details dialog surfaces
+    // the full hash + verify menus there instead.
+    "@media (max-width: 600px)": { display: "none" },
   },
   hashRow: {
     display: "inline-flex",
@@ -211,8 +220,8 @@ const useStyles = makeStyles({
     padding: "1px 6px",
     backgroundColor: "transparent",
     fontFamily: "inherit",
-    // Cap the chip at its container so a long GUID truncates instead of
-    // wrapping the value across multiple lines on narrow viewports.
+    // Cap the chip at its container so long GUIDs truncate instead of
+    // wrapping the value across multiple lines.
     maxWidth: "100%",
     minWidth: 0,
     overflow: "hidden",
@@ -258,6 +267,12 @@ const useStyles = makeStyles({
     justifyContent: "flex-end",
     width: "100%",
   },
+  // Row-action buttons that are duplicated in the Details dialog — hide
+  // them on phones so the actions column doesn't push the file name off
+  // screen. The Details button covers the same surface area.
+  actionDesktopOnly: {
+    "@media (max-width: 600px)": { display: "none" },
+  },
   empty: {
     padding: "32px",
     textAlign: "center",
@@ -266,23 +281,17 @@ const useStyles = makeStyles({
   },
   filterInputWrap: {
     width: "220px",
-    "@media (max-width: 600px)": {
-      width: "100%",
-    },
+    "@media (max-width: 600px)": { width: "100%" },
   },
   ckShellLeft: {
     paddingLeft: "20px",
-    "@media (max-width: 600px)": {
-      paddingLeft: "12px",
-    },
+    "@media (max-width: 600px)": { paddingLeft: "12px" },
   },
   ckShellRight: {
     paddingRight: "20px",
-    "@media (max-width: 600px)": {
-      paddingRight: "12px",
-    },
+    "@media (max-width: 600px)": { paddingRight: "12px" },
   },
-  // Column-width classes — kept here (rather than inline `style`) so the
+  // Column-width classes — set here (rather than inline `style`) so the
   // media queries below can actually override them on phones.
   colCheck: {
     width: "56px",
@@ -305,18 +314,18 @@ const useStyles = makeStyles({
     "@media (max-width: 600px)": { width: "72px" },
   },
   colActions: {
-    width: "130px",
-    "@media (max-width: 600px)": { width: "96px" },
+    width: "160px",
+    "@media (max-width: 600px)": { width: "92px" },
   },
-  // Inline Type+Arch meta shown under the file name on mobile only, since
-  // those columns are hidden to free space for the name.
+  // Inline Type + Arch shown under the file name when their dedicated
+  // columns are hidden on mobile.
   mobileMeta: {
     display: "none",
     "@media (max-width: 600px)": {
       display: "flex",
       flexWrap: "wrap",
       alignItems: "center",
-      columnGap: "6px",
+      columnGap: "8px",
       rowGap: "4px",
       marginTop: "4px",
     },
@@ -324,6 +333,102 @@ const useStyles = makeStyles({
   mobileArchText: {
     fontSize: "11px",
     color: tokens.colorNeutralForeground3,
+  },
+  // ── Details dialog ────────────────────────────────────────────────────
+  dialogSurface: {
+    "@media (max-width: 600px)": {
+      width: "calc(100vw - 24px)",
+      maxWidth: "100%",
+      // Default DialogSurface min-width can push content off-screen on
+      // narrow phones.
+      minWidth: 0,
+    },
+  },
+  dialogTitle: {
+    wordBreak: "break-all",
+    fontSize: "14px",
+    lineHeight: 1.4,
+  },
+  dialogBody: {
+    display: "flex",
+    flexDirection: "column",
+    rowGap: "16px",
+  },
+  dialogSectionLabel: {
+    fontSize: "11px",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: tokens.colorNeutralForeground3,
+    marginBottom: "6px",
+  },
+  fieldGrid: {
+    display: "grid",
+    gridTemplateColumns: "auto 1fr",
+    columnGap: "12px",
+    rowGap: "6px",
+    fontSize: "12px",
+  },
+  fieldLabel: { color: tokens.colorNeutralForeground3 },
+  fieldValue: {
+    color: tokens.colorNeutralForeground1,
+    minWidth: 0,
+    overflowWrap: "anywhere",
+  },
+  hashSection: {
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusMedium,
+    padding: "10px 12px",
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
+  hashHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: "6px",
+    columnGap: "8px",
+  },
+  hashHeaderName: {
+    fontSize: "12px",
+    fontWeight: 600,
+    color: tokens.colorNeutralForeground1,
+  },
+  hashBlock: {
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground2,
+    backgroundColor: tokens.colorNeutralBackground3,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusSmall,
+    padding: "8px 10px",
+    // Hashes are continuous hex strings — let them break per-character so
+    // they always fit the dialog width on phones without a horizontal
+    // scrollbar.
+    wordBreak: "break-all",
+    overflowWrap: "anywhere",
+    userSelect: "all",
+  },
+  verifyRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: "6px",
+    rowGap: "6px",
+    marginTop: "8px",
+  },
+  verifyLabel: {
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+  },
+  hashEmpty: {
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground3,
+    fontStyle: "italic",
+  },
+  dialogActionsGroup: {
+    display: "flex",
+    flexWrap: "wrap",
+    columnGap: "6px",
+    rowGap: "6px",
   },
 });
 
@@ -659,6 +764,17 @@ function ResultRow({
   const badgeColor: "brand" | "warning" | "informative" =
     item.type === "APPX" ? "brand" : item.type === "BlockMap" ? "informative" : "warning";
 
+  const triggerDownload = () => {
+    const a = document.createElement("a");
+    a.href = item.url;
+    a.download = item.name;
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   return (
     <TableRow className={selected ? styles.rowSelected : undefined}>
       <TableCell className={mergeClasses(styles.ckShellLeft, styles.colCheck)}>
@@ -686,70 +802,16 @@ function ResultRow({
               <Text className={`qsl-mono ${styles.mobileArchText}`}>{item.arch ?? "—"}</Text>
             </div>
             {item.sha256 && (
-              <div className={styles.hashLine}>
-                <Tooltip
-                  content={t("results.hash.tooltip", { hash: item.sha256 })}
-                  relationship="label"
-                >
-                  <button
-                    type="button"
-                    className={`qsl-mono ${styles.hashRow}`}
-                    onClick={() => onCopy(item.sha256!, t("results.hash.copyLabel"))}
-                    aria-label={t("results.hash.copyAria")}
-                  >
-                    <span className={styles.hashLabel}>{t("results.hash.copyLabel")}</span>
-                    <span>{item.sha256.slice(0, 16)}…</span>
-                    <CopyRegular fontSize={11} />
-                  </button>
-                </Tooltip>
-                <Menu positioning="below-start">
-                  <MenuTrigger disableButtonEnhancement>
-                    <Tooltip content={t("results.hash.verifyTooltip")} relationship="label">
-                      <button
-                        type="button"
-                        className={styles.verifyBtn}
-                        aria-label={t("results.hash.verifyAria")}
-                      >
-                        <WindowConsoleRegular fontSize={12} />
-                      </button>
-                    </Tooltip>
-                  </MenuTrigger>
-                  <MenuPopover>
-                    <MenuList>
-                      <MenuItem
-                        onClick={() =>
-                          onCopy(
-                            buildVerifyCommand("powershell", item.name, item.sha256!),
-                            t("results.hash.shell.powershellLabel"),
-                          )
-                        }
-                      >
-                        {t("results.hash.shell.powershell")}
-                      </MenuItem>
-                      <MenuItem
-                        onClick={() =>
-                          onCopy(
-                            buildVerifyCommand("cmd", item.name, item.sha256!),
-                            t("results.hash.shell.cmdLabel"),
-                          )
-                        }
-                      >
-                        {t("results.hash.shell.cmd")}
-                      </MenuItem>
-                      <MenuItem
-                        onClick={() =>
-                          onCopy(
-                            buildVerifyCommand("bash", item.name, item.sha256!),
-                            t("results.hash.shell.bashLabel"),
-                          )
-                        }
-                      >
-                        {t("results.hash.shell.bash")}
-                      </MenuItem>
-                    </MenuList>
-                  </MenuPopover>
-                </Menu>
-              </div>
+              <HashChip
+                algo="sha256"
+                value={item.sha256}
+                fileName={item.name}
+                onCopy={onCopy}
+                t={t}
+              />
+            )}
+            {item.sha1 && (
+              <HashChip algo="sha1" value={item.sha1} fileName={item.name} onCopy={onCopy} t={t} />
             )}
           </div>
         </TableCellLayout>
@@ -769,6 +831,7 @@ function ResultRow({
       </TableCell>
       <TableCell className={mergeClasses(styles.ckShellRight, styles.colActions)}>
         <span className={styles.actionGroup}>
+          <DetailsDialog item={item} onCopy={onCopy} onDownload={triggerDownload} t={t} />
           <Tooltip content={t("results.row.copyUrl")} relationship="label">
             <Button
               appearance="subtle"
@@ -776,6 +839,7 @@ function ResultRow({
               icon={<CopyRegular />}
               aria-label={t("results.row.copyUrl")}
               onClick={() => onCopy(item.url, item.name)}
+              className={styles.actionDesktopOnly}
             />
           </Tooltip>
           <Tooltip content={t("results.row.download")} relationship="label">
@@ -784,16 +848,7 @@ function ResultRow({
               size="small"
               icon={<ArrowDownloadRegular />}
               aria-label={t("results.row.download")}
-              onClick={() => {
-                const a = document.createElement("a");
-                a.href = item.url;
-                a.download = item.name;
-                a.target = "_blank";
-                a.rel = "noreferrer";
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-              }}
+              onClick={triggerDownload}
             />
           </Tooltip>
           <Tooltip content={t("results.row.open")} relationship="label">
@@ -803,10 +858,270 @@ function ResultRow({
               icon={<OpenRegular />}
               aria-label={t("results.row.open")}
               onClick={() => window.open(item.url, "_blank")}
+              className={styles.actionDesktopOnly}
             />
           </Tooltip>
         </span>
       </TableCell>
     </TableRow>
+  );
+}
+
+function HashChip({
+  algo,
+  value,
+  fileName,
+  onCopy,
+  t,
+}: {
+  algo: HashAlgo;
+  value: string;
+  fileName: string;
+  onCopy: (text: string, what: string) => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  const label = t(
+    algo === "sha256" ? "results.hash.copyLabel.sha256" : "results.hash.copyLabel.sha1",
+  );
+  return (
+    <div className={styles.hashLine}>
+      <Tooltip content={t("results.hash.tooltip", { hash: value })} relationship="label">
+        <button
+          type="button"
+          className={`qsl-mono ${styles.hashRow}`}
+          onClick={() => onCopy(value, label)}
+          aria-label={t("results.hash.copyAria", { algo: label })}
+        >
+          <span className={styles.hashLabel}>{label}</span>
+          <span>{value.slice(0, 16)}…</span>
+          <CopyRegular fontSize={11} />
+        </button>
+      </Tooltip>
+      <Menu positioning="below-start">
+        <MenuTrigger disableButtonEnhancement>
+          <Tooltip content={t("results.hash.verifyTooltip", { algo: label })} relationship="label">
+            <button
+              type="button"
+              className={styles.verifyBtn}
+              aria-label={t("results.hash.verifyAria", { algo: label })}
+            >
+              <WindowConsoleRegular fontSize={12} />
+            </button>
+          </Tooltip>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuItem
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("powershell", algo, fileName, value),
+                  t("results.hash.shell.powershellLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.powershell")}
+            </MenuItem>
+            <MenuItem
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("cmd", algo, fileName, value),
+                  t("results.hash.shell.cmdLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.cmd")}
+            </MenuItem>
+            <MenuItem
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("bash", algo, fileName, value),
+                  t("results.hash.shell.bashLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.bash")}
+            </MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+    </div>
+  );
+}
+
+// Full-fat details surface — opened from the row's fingerprint button.
+// Tables don't scale to phone widths, so this is the canonical place to
+// see the full hash, run verify commands, and reach Copy URL / Open
+// when those actions are hidden from the row on mobile.
+function DetailsDialog({
+  item,
+  onCopy,
+  onDownload,
+  t,
+}: {
+  item: NormalizedItem;
+  onCopy: (text: string, what: string) => void;
+  onDownload: () => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  return (
+    <Dialog>
+      <DialogTrigger disableButtonEnhancement>
+        <Tooltip content={t("results.details.open")} relationship="label">
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<FingerprintRegular />}
+            aria-label={t("results.details.openAria", { name: item.name })}
+          />
+        </Tooltip>
+      </DialogTrigger>
+      <DialogSurface className={styles.dialogSurface}>
+        <DialogBody>
+          <DialogTitle className={`qsl-mono ${styles.dialogTitle}`}>{item.name}</DialogTitle>
+          <DialogContent className={styles.dialogBody}>
+            <section>
+              <div className={styles.dialogSectionLabel}>
+                {t("results.details.section.metadata")}
+              </div>
+              <div className={styles.fieldGrid}>
+                <span className={styles.fieldLabel}>{t("results.details.field.type")}</span>
+                <span className={styles.fieldValue}>{item.type}</span>
+                <span className={styles.fieldLabel}>{t("results.details.field.arch")}</span>
+                <span className={`qsl-mono ${styles.fieldValue}`}>{item.arch ?? "—"}</span>
+                <span className={styles.fieldLabel}>{t("results.details.field.size")}</span>
+                <span className={styles.fieldValue}>{item.size}</span>
+                {item.version && (
+                  <>
+                    <span className={styles.fieldLabel}>{t("results.details.field.version")}</span>
+                    <span className={`qsl-mono ${styles.fieldValue}`}>{item.version}</span>
+                  </>
+                )}
+              </div>
+            </section>
+
+            <HashSection
+              algo="sha256"
+              value={item.sha256}
+              fileName={item.name}
+              onCopy={onCopy}
+              t={t}
+            />
+            <HashSection algo="sha1" value={item.sha1} fileName={item.name} onCopy={onCopy} t={t} />
+          </DialogContent>
+          <DialogActions>
+            <div className={styles.dialogActionsGroup}>
+              <Button
+                appearance="subtle"
+                icon={<CopyRegular />}
+                onClick={() => onCopy(item.url, item.name)}
+              >
+                {t("results.details.copyUrl")}
+              </Button>
+              <Button
+                appearance="subtle"
+                icon={<OpenRegular />}
+                onClick={() => window.open(item.url, "_blank")}
+              >
+                {t("results.row.open")}
+              </Button>
+              <Button appearance="primary" icon={<ArrowDownloadRegular />} onClick={onDownload}>
+                {t("results.row.download")}
+              </Button>
+              <DialogTrigger disableButtonEnhancement>
+                <Button appearance="secondary">{t("results.details.close")}</Button>
+              </DialogTrigger>
+            </div>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+function HashSection({
+  algo,
+  value,
+  fileName,
+  onCopy,
+  t,
+}: {
+  algo: HashAlgo;
+  value: string | undefined;
+  fileName: string;
+  onCopy: (text: string, what: string) => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  const label = t(
+    algo === "sha256" ? "results.hash.copyLabel.sha256" : "results.hash.copyLabel.sha1",
+  );
+  return (
+    <section className={styles.hashSection}>
+      <div className={styles.hashHeader}>
+        <span className={styles.hashHeaderName}>{label}</span>
+        {value && (
+          <Tooltip content={t("results.hash.copyAria", { algo: label })} relationship="label">
+            <Button
+              appearance="subtle"
+              size="small"
+              icon={<CopyRegular />}
+              onClick={() => onCopy(value, label)}
+              aria-label={t("results.hash.copyAria", { algo: label })}
+            />
+          </Tooltip>
+        )}
+      </div>
+      {value ? (
+        <>
+          <div className={`qsl-mono ${styles.hashBlock}`}>{value}</div>
+          <div className={styles.verifyRow}>
+            <span className={styles.verifyLabel}>{t("results.details.verifyOn")}</span>
+            <Button
+              appearance="outline"
+              size="small"
+              icon={<WindowConsoleRegular />}
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("powershell", algo, fileName, value),
+                  t("results.hash.shell.powershellLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.powershell")}
+            </Button>
+            <Button
+              appearance="outline"
+              size="small"
+              icon={<WindowConsoleRegular />}
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("cmd", algo, fileName, value),
+                  t("results.hash.shell.cmdLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.cmd")}
+            </Button>
+            <Button
+              appearance="outline"
+              size="small"
+              icon={<WindowConsoleRegular />}
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("bash", algo, fileName, value),
+                  t("results.hash.shell.bashLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.bash")}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className={styles.hashEmpty}>{t("results.details.hash.empty", { algo: label })}</div>
+      )}
+    </section>
   );
 }

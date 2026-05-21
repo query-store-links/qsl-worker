@@ -40,6 +40,9 @@ export interface DownloadItem {
   FileSize: string;
   /** Lowercase hex SHA-256 of the package, from DisplayCatalog when available. */
   Sha256?: string | null;
+  /** Lowercase hex SHA-1 of the package, decoded from the FE3 `<File Digest>`
+   *  attribute when `<DigestAlgorithm>` is `SHA1`. */
+  Sha1?: string | null;
 }
 
 /** Structured, localizable message emitted by the worker. The frontend
@@ -148,6 +151,7 @@ export interface NormalizedItem {
   arch?: "x64" | "arm64" | "x86" | "neutral";
   version?: string;
   sha256?: string;
+  sha1?: string;
 }
 
 export interface IdTypeMeta {
