@@ -44,25 +44,36 @@ type FilterKey = "all" | PackageType;
 type SortKey = "name" | "size" | "type" | "arch";
 
 type Shell = "powershell" | "cmd" | "bash";
+type HashAlgo = "sha256" | "sha1";
 
-function buildVerifyCommand(shell: Shell, file: string, hash: string): string {
+function buildVerifyCommand(
+  shell: Shell,
+  algo: HashAlgo,
+  file: string,
+  hash: string,
+): string {
+  // Get-FileHash / certutil want the wire-style label (SHA256 / SHA1);
+  // sha*sum is two separate binaries.
+  const psAlgo = algo === "sha256" ? "SHA256" : "SHA1";
+  const certutilAlgo = psAlgo;
+  const sumBin = algo === "sha256" ? "sha256sum" : "sha1sum";
   switch (shell) {
     case "powershell": {
       // Single-quoted PS strings escape an embedded quote by doubling it.
       const f = file.replace(/'/g, "''");
-      return `if ((Get-FileHash -Algorithm SHA256 '${f}').Hash -ieq '${hash}') { 'OK' } else { 'MISMATCH' }`;
+      return `if ((Get-FileHash -Algorithm ${psAlgo} '${f}').Hash -ieq '${hash}') { 'OK' } else { 'MISMATCH' }`;
     }
     case "cmd": {
       // CMD has no general escape for `"` inside quoted args; doubling works
       // for most consumers and is the convention certutil accepts.
       const f = file.replace(/"/g, '""');
-      return `certutil -hashfile "${f}" SHA256 | find /i "${hash}" >NUL && echo OK || echo MISMATCH`;
+      return `certutil -hashfile "${f}" ${certutilAlgo} | find /i "${hash}" >NUL && echo OK || echo MISMATCH`;
     }
     case "bash": {
-      // sha256sum -c expects "<hash><space><space><file>"; close the single
+      // sha*sum -c expects "<hash><space><space><file>"; close the single
       // quote, insert an escaped literal, and re-open for any `'` in the name.
       const f = file.replace(/'/g, "'\\''");
-      return `echo '${hash}  ${f}' | sha256sum -c -`;
+      return `echo '${hash}  ${f}' | ${sumBin} -c -`;
     }
   }
 }
@@ -686,70 +697,22 @@ function ResultRow({
               <Text className={`qsl-mono ${styles.mobileArchText}`}>{item.arch ?? "—"}</Text>
             </div>
             {item.sha256 && (
-              <div className={styles.hashLine}>
-                <Tooltip
-                  content={t("results.hash.tooltip", { hash: item.sha256 })}
-                  relationship="label"
-                >
-                  <button
-                    type="button"
-                    className={`qsl-mono ${styles.hashRow}`}
-                    onClick={() => onCopy(item.sha256!, t("results.hash.copyLabel"))}
-                    aria-label={t("results.hash.copyAria")}
-                  >
-                    <span className={styles.hashLabel}>{t("results.hash.copyLabel")}</span>
-                    <span>{item.sha256.slice(0, 16)}…</span>
-                    <CopyRegular fontSize={11} />
-                  </button>
-                </Tooltip>
-                <Menu positioning="below-start">
-                  <MenuTrigger disableButtonEnhancement>
-                    <Tooltip content={t("results.hash.verifyTooltip")} relationship="label">
-                      <button
-                        type="button"
-                        className={styles.verifyBtn}
-                        aria-label={t("results.hash.verifyAria")}
-                      >
-                        <WindowConsoleRegular fontSize={12} />
-                      </button>
-                    </Tooltip>
-                  </MenuTrigger>
-                  <MenuPopover>
-                    <MenuList>
-                      <MenuItem
-                        onClick={() =>
-                          onCopy(
-                            buildVerifyCommand("powershell", item.name, item.sha256!),
-                            t("results.hash.shell.powershellLabel"),
-                          )
-                        }
-                      >
-                        {t("results.hash.shell.powershell")}
-                      </MenuItem>
-                      <MenuItem
-                        onClick={() =>
-                          onCopy(
-                            buildVerifyCommand("cmd", item.name, item.sha256!),
-                            t("results.hash.shell.cmdLabel"),
-                          )
-                        }
-                      >
-                        {t("results.hash.shell.cmd")}
-                      </MenuItem>
-                      <MenuItem
-                        onClick={() =>
-                          onCopy(
-                            buildVerifyCommand("bash", item.name, item.sha256!),
-                            t("results.hash.shell.bashLabel"),
-                          )
-                        }
-                      >
-                        {t("results.hash.shell.bash")}
-                      </MenuItem>
-                    </MenuList>
-                  </MenuPopover>
-                </Menu>
-              </div>
+              <HashChip
+                algo="sha256"
+                value={item.sha256}
+                fileName={item.name}
+                onCopy={onCopy}
+                t={t}
+              />
+            )}
+            {item.sha1 && (
+              <HashChip
+                algo="sha1"
+                value={item.sha1}
+                fileName={item.name}
+                onCopy={onCopy}
+                t={t}
+              />
             )}
           </div>
         </TableCellLayout>
@@ -808,5 +771,90 @@ function ResultRow({
         </span>
       </TableCell>
     </TableRow>
+  );
+}
+
+function HashChip({
+  algo,
+  value,
+  fileName,
+  onCopy,
+  t,
+}: {
+  algo: HashAlgo;
+  value: string;
+  fileName: string;
+  onCopy: (text: string, what: string) => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  const label = t(
+    algo === "sha256" ? "results.hash.copyLabel.sha256" : "results.hash.copyLabel.sha1",
+  );
+  return (
+    <div className={styles.hashLine}>
+      <Tooltip content={t("results.hash.tooltip", { hash: value })} relationship="label">
+        <button
+          type="button"
+          className={`qsl-mono ${styles.hashRow}`}
+          onClick={() => onCopy(value, label)}
+          aria-label={t("results.hash.copyAria", { algo: label })}
+        >
+          <span className={styles.hashLabel}>{label}</span>
+          <span>{value.slice(0, 16)}…</span>
+          <CopyRegular fontSize={11} />
+        </button>
+      </Tooltip>
+      <Menu positioning="below-start">
+        <MenuTrigger disableButtonEnhancement>
+          <Tooltip
+            content={t("results.hash.verifyTooltip", { algo: label })}
+            relationship="label"
+          >
+            <button
+              type="button"
+              className={styles.verifyBtn}
+              aria-label={t("results.hash.verifyAria", { algo: label })}
+            >
+              <WindowConsoleRegular fontSize={12} />
+            </button>
+          </Tooltip>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuItem
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("powershell", algo, fileName, value),
+                  t("results.hash.shell.powershellLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.powershell")}
+            </MenuItem>
+            <MenuItem
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("cmd", algo, fileName, value),
+                  t("results.hash.shell.cmdLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.cmd")}
+            </MenuItem>
+            <MenuItem
+              onClick={() =>
+                onCopy(
+                  buildVerifyCommand("bash", algo, fileName, value),
+                  t("results.hash.shell.bashLabel", { algo: label }),
+                )
+              }
+            >
+              {t("results.hash.shell.bash")}
+            </MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+    </div>
   );
 }

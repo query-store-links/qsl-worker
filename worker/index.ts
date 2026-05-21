@@ -69,6 +69,51 @@ function bytesToString(n: number | bigint | null | undefined): string {
   return `${rounded}${suffixes[place]}`;
 }
 
+// storelib's `PackageInstance.digest` is the FE3 `<File Digest>` attribute,
+// which Microsoft Update returns base64-encoded (20 bytes → 28 chars for
+// SHA-1, 32 bytes → 44 chars for SHA-256). The UI verifies hashes against
+// `sha1sum` / `Get-FileHash` output, both of which speak lowercase hex, so
+// normalise to hex here. Already-hex inputs (40 or 64 chars) pass through
+// untouched in case a future storelib release switches encodings.
+function digestToHex(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if ((s.length === 40 || s.length === 64) && /^[0-9a-fA-F]+$/.test(s)) {
+    return s.toLowerCase();
+  }
+  try {
+    const bin = atob(s);
+    let hex = "";
+    for (let i = 0; i < bin.length; i++) {
+      hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
+    }
+    return hex || null;
+  } catch {
+    return null;
+  }
+}
+
+// Pick a specific algorithm's digest off a PackageInstance. Looks at the
+// primary `<File Digest>` (`digest` + `digestAlgorithm`) first, then any
+// `<AdditionalDigest Algorithm="...">` children. Returns lowercase hex.
+function pickDigest(pkg: PackageInstance, algo: "SHA1" | "SHA256"): string | null {
+  // Accept "SHA1" / "sha-1" / "Sha 1" — strip non-alphanumerics so the
+  // matcher doesn't care about MS Update's occasional formatting drift.
+  const norm = (s: string | null | undefined) => s?.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (pkg.digest && norm(pkg.digestAlgorithm) === algo) {
+    const hex = digestToHex(pkg.digest);
+    if (hex) return hex;
+  }
+  for (const d of pkg.additionalDigests) {
+    if (norm(d.algorithm) === algo) {
+      const hex = digestToHex(d.value);
+      if (hex) return hex;
+    }
+  }
+  return null;
+}
+
 function errKind(e: unknown): StorelibError["kind"] | "unknown" {
   if (e && typeof e === "object" && "kind" in e) {
     const k = (e as { kind?: unknown }).kind;
@@ -498,7 +543,8 @@ async function handleWuCategoryId(
         FileName: pkg.readableFileName || pkg.packageMoniker || "Unknown",
         FileLink: uri,
         FileSize: bytesToString(size),
-        Sha256: null,
+        Sha256: pickDigest(pkg, "SHA256"),
+        Sha1: pickDigest(pkg, "SHA1"),
       });
     }
     emit("fe3.done", `${items.length} package(s) resolved`);
@@ -639,17 +685,21 @@ async function handleAppx(
     const seen = new Set<string>();
     const items: DownloadItem[] = [];
     let hashMatched = 0;
+    let sha1Matched = 0;
     for (const pkg of packages) {
       const key = pkg.packageUri || pkg.packageMoniker;
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      const sha = lookupSha(pkg);
-      if (sha) hashMatched++;
+      const sha256 = lookupSha(pkg) ?? pickDigest(pkg, "SHA256");
+      const sha1 = pickDigest(pkg, "SHA1");
+      if (sha256) hashMatched++;
+      if (sha1) sha1Matched++;
       items.push({
         FileName: pkg.readableFileName || pkg.packageMoniker || "Unknown",
         FileLink: pkg.packageUri ?? "",
         FileSize: bytesToString(pkg.packageSize),
-        Sha256: sha,
+        Sha256: sha256,
+        Sha1: sha1,
       });
     }
 
@@ -663,6 +713,7 @@ async function handleAppx(
         dcatPackageCount: handler.packages.length,
         dcatPackagesWithSha256: sha256ByName.size,
         itemsWithSha256: hashMatched,
+        itemsWithSha1: sha1Matched,
       },
     };
   } finally {
@@ -1246,6 +1297,7 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
         FileLink: picked.item.FileLink,
         FileSize: picked.item.FileSize,
         Sha256: picked.item.Sha256,
+        Sha1: picked.item.Sha1,
         Arch: picked.arch,
         IsBundle: picked.isBundle,
         IsFramework: picked.isFramework,
@@ -1257,6 +1309,7 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
         FileLink: c.item.FileLink,
         FileSize: c.item.FileSize,
         Sha256: c.item.Sha256,
+        Sha1: c.item.Sha1,
         Arch: c.arch,
         IsBundle: c.isBundle,
         IsFramework: c.isFramework,

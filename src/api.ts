@@ -186,6 +186,7 @@ export async function callBackend(
         arch: inferArch(item.FileName ?? ""),
         version: inferVersion(item.FileName ?? ""),
         sha256: item.Sha256 ?? undefined,
+        sha1: item.Sha1 ?? undefined,
       };
     });
 
@@ -462,6 +463,12 @@ export function mockResults(input: string): NormalizedItem[] {
         ? undefined
         : Array.from({ length: 64 }, (_, j) =>
             ((seed * 31 + i * 17 + j * 7) & 0xf).toString(16),
+          ).join(""),
+    sha1:
+      b.type === "BlockMap"
+        ? undefined
+        : Array.from({ length: 40 }, (_, j) =>
+            ((seed * 41 + i * 13 + j * 11) & 0xf).toString(16),
           ).join(""),
   }));
 }
