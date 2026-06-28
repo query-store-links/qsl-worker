@@ -39,6 +39,9 @@ import {
   renderApiCode,
   type ApiCode,
   type AppInfo,
+  type DependencyGraph,
+  type DependencyMap,
+  type DependencyNode,
   type DownloadItem,
   type ResolveAllRequest,
   type ResolveAllResponse,
@@ -114,6 +117,135 @@ function pickDigest(pkg: PackageInstance, algo: "SHA1" | "SHA256"): string | nul
   return null;
 }
 
+// DisplayCatalog returns dependency `minVersion` / `maxTested` as either a
+// version string ("14.0.33728.0") or a packed integer depending on the
+// endpoint — storelib types them as `any`. Coerce to a display string and
+// drop empty values to `null`.
+function depValueToString(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "string") return v.trim() || null;
+  if (typeof v === "number" || typeof v === "bigint") return v.toString();
+  return String(v);
+}
+
+// Read storelib_rs 0.1.11's named dependency map straight off the handler.
+// `frameworkDependencies` are the runtime PFNs (VCLibs, WindowsAppRuntime,
+// .NET Native, …) the product was built against; `platformDependencies` are
+// the targeted OS families (Windows.Universal, Windows.Desktop, …). Both
+// getters are already deduplicated wasm-side.
+function buildDependencyMap(handler: DisplayCatalogHandler): DependencyMap {
+  const frameworks = handler.frameworkDependencies.map((d) => ({
+    PackageIdentity: d.packageIdentity ?? null,
+    MinVersion: depValueToString(d.minVersion),
+    MaxTested: depValueToString(d.maxTested),
+  }));
+  const platforms = handler.platformDependencies.map((d) => ({
+    PlatformName: d.platformName ?? null,
+    MinVersion: depValueToString(d.minVersion),
+    MaxTested: depValueToString(d.maxTested),
+  }));
+  return { Frameworks: frameworks, Platforms: platforms };
+}
+
+// PFN identity base (the "Name" segment of a `Name_Version_Arch_ResId_PubHash`
+// full name / moniker). Underscore is the PFN field separator and never
+// appears inside the identity itself, so the first segment is the identity.
+function identityFromName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const base = name.split("_")[0];
+  return base || null;
+}
+
+// FE3 monikers are `Name_Version_Arch_ResourceId_PubHash`. Pull the version /
+// arch segments so a resolved framework node can show what's downloadable.
+function monikerVersion(moniker: string): string | null {
+  return moniker.split("_")[1] || null;
+}
+function monikerArch(moniker: string): string | null {
+  const a = moniker.split("_")[2];
+  return a && a !== "~" ? a : null;
+}
+
+// Build the directed dependency graph for the resolved product. DisplayCatalog
+// declares, per app package, the named framework identities it needs
+// (`Package.frameworkDependencies`, e.g. `Microsoft.VCLibs.140.00.UWPDesktop`);
+// storelib_rs 0.1.11 surfaces these. We union them under the app's own
+// identity and cross-reference the resolved FE3 packages so each framework
+// node knows whether it's actually in the download set and at which
+// versions/arches. The result is `app needs [frameworks]`, with each framework
+// a node in its own right (a leaf here, since a single resolve only carries
+// the app's declared edges — frameworks' own deps would need separate
+// queries).
+function buildDependencyGraph(
+  handler: DisplayCatalogHandler,
+  instances: PackageInstance[],
+): DependencyGraph {
+  // Index resolved packages by identity → versions / arches present. Keyed on
+  // a lowercased identity because FE3's `packageIdentityName` and DCat's
+  // full-name casing don't always agree (e.g. `4DF9E0F8.NETFLIX` vs
+  // `4DF9E0F8.Netflix`) — the edges below carry DCat's original casing, so we
+  // only need a case-insensitive *lookup* here, not canonical ids.
+  const resolved = new Map<string, { versions: Set<string>; archs: Set<string> }>();
+  for (const inst of instances) {
+    const id = inst.packageIdentityName ?? identityFromName(inst.packageMoniker);
+    if (!id) continue;
+    const key = id.toLowerCase();
+    const entry = resolved.get(key) ?? { versions: new Set<string>(), archs: new Set<string>() };
+    const v = monikerVersion(inst.packageMoniker);
+    const a = monikerArch(inst.packageMoniker);
+    if (v) entry.versions.add(v);
+    if (a) entry.archs.add(a);
+    resolved.set(key, entry);
+  }
+
+  // App identities → declared framework deps, unioned across arch packages.
+  const appDeps = new Map<string, Set<string>>();
+  for (const p of handler.packages) {
+    const appId = identityFromName(p.packageFullName ?? p.packageFamilyName);
+    if (!appId) continue;
+    const set = appDeps.get(appId) ?? new Set<string>();
+    for (const d of p.frameworkDependencies ?? []) {
+      if (d.packageIdentity && d.packageIdentity !== appId) set.add(d.packageIdentity);
+    }
+    appDeps.set(appId, set);
+  }
+
+  const nodes = new Map<string, DependencyNode>();
+  const ensure = (id: string, isFramework: boolean): DependencyNode => {
+    let n = nodes.get(id);
+    if (!n) {
+      const r = resolved.get(id.toLowerCase());
+      n = {
+        Id: id,
+        Name: id,
+        IsFramework: isFramework,
+        Resolved: r != null,
+        Versions: r ? [...r.versions].sort() : [],
+        Architectures: r ? [...r.archs].sort() : [],
+        DependsOn: [],
+      };
+      nodes.set(id, n);
+    }
+    if (isFramework) n.IsFramework = true;
+    return n;
+  };
+
+  for (const [appId, deps] of appDeps) {
+    const appNode = ensure(appId, false);
+    for (const depId of deps) {
+      ensure(depId, true);
+      if (!appNode.DependsOn.includes(depId)) appNode.DependsOn.push(depId);
+    }
+  }
+
+  // Roots = nodes nothing depends on (the app packages, usually).
+  const depended = new Set<string>();
+  for (const n of nodes.values()) for (const d of n.DependsOn) depended.add(d);
+  const roots = [...nodes.keys()].filter((id) => !depended.has(id));
+
+  return { Nodes: [...nodes.values()], Roots: roots };
+}
+
 function errKind(e: unknown): StorelibError["kind"] | "unknown" {
   if (e && typeof e === "object" && "kind" in e) {
     const k = (e as { kind?: unknown }).kind;
@@ -134,43 +266,53 @@ function errCauses(e: unknown): string[] | undefined {
   return undefined;
 }
 
-/** Parse the message string from a `fe3.linkReceived` progress event back
- *  into structured fields. storelib 0.1.8 emits one such event per package
- *  the instant its FE3 download URL is parsed — earlier than the final
+/** Parse the message string from an FE3 per-package progress event into
+ *  structured fields. storelib emits one such event per package the instant
+ *  its FE3 download URL is parsed — earlier than the final
  *  `getPackagesForProduct` resolve completes, which is what lets us stream
  *  rows into the UI as they arrive.
  *
- *  Wire format (defined in storelib_rs's display_catalog.rs):
- *    "<moniker> | uri=<url> | size=<bytes-or-?> | updateId=<id>"
- *  The first `" | uri="` is unambiguous (monikers don't contain that token),
- *  and `size`/`updateId` are anchored to the tail so a URL containing
- *  embedded `|`s wouldn't break the parser. */
+ *  Wire formats (defined in storelib_rs's `display_catalog.rs` / `fe3.rs`).
+ *  storelib 0.1.11 enriched these with `digest=` / `locs=` / `prereqs=`
+ *  fields and dropped `size=` from `fe3.linkReceived`, so the parser is a
+ *  tolerant tokenizer rather than a fixed positional split:
+ *
+ *    fe3.linkReceived  (DCat):  "<moniker> | uri=<url> | digest=<h> | updateId=<id>"
+ *    fe3.packageResolved (DCat): "<moniker> | uri=<url> | size=<bytes-or-?> |
+ *                                 digest=<h> | locs=<n> | prereqs=<n> | updateId=<id>"
+ *    fe3.linkReceived  (FE3-only): "uri=<url> | size=<bytes-or-?> | updateId=<id>"
+ *      (no moniker — the WuCategoryId handler re-emits these with one prepended)
+ *
+ *  The separator is a literal `" | "` (space-pipe-space). FE3 URLs are
+ *  percent-encoded so they can never contain that token, which makes a plain
+ *  split safe even though URLs carry their own `|`/`&`/`=` query characters.
+ *  A bare segment with no `=` is the leading moniker (absent on the FE3-only
+ *  form). Unknown fields are simply ignored, so future additions won't break
+ *  the parser. */
 function parseLinkReceived(
   message: string,
 ): { moniker: string; uri: string; size: number | null; updateId: string } | null {
-  const uriMark = " | uri=";
-  const uriIdx = message.indexOf(uriMark);
-  if (uriIdx < 0) return null;
-  const moniker = message.slice(0, uriIdx);
-  const after = message.slice(uriIdx + uriMark.length);
-
-  const updateIdMark = " | updateId=";
-  const updateIdIdx = after.lastIndexOf(updateIdMark);
-  if (updateIdIdx < 0) return null;
-  const updateId = after.slice(updateIdIdx + updateIdMark.length);
-  const uriAndSize = after.slice(0, updateIdIdx);
-
-  const sizeMark = " | size=";
-  const sizeIdx = uriAndSize.lastIndexOf(sizeMark);
-  if (sizeIdx < 0) return null;
-  const uri = uriAndSize.slice(0, sizeIdx);
-  const sizeStr = uriAndSize.slice(sizeIdx + sizeMark.length);
-  const sizeNum = sizeStr === "?" ? null : Number(sizeStr);
+  const fields: Record<string, string> = {};
+  let moniker = "";
+  for (const seg of message.split(" | ")) {
+    const eq = seg.indexOf("=");
+    if (eq < 0) {
+      if (!moniker) moniker = seg;
+      continue;
+    }
+    // First occurrence wins; the known keys are unique per message.
+    const key = seg.slice(0, eq);
+    if (!(key in fields)) fields[key] = seg.slice(eq + 1);
+  }
+  const uri = fields.uri;
+  if (uri == null) return null;
+  const sizeStr = fields.size;
+  const sizeNum = sizeStr == null || sizeStr === "?" ? null : Number(sizeStr);
   return {
     moniker,
     uri,
     size: Number.isFinite(sizeNum as number) ? sizeNum : null,
-    updateId,
+    updateId: fields.updateId ?? "",
   };
 }
 
@@ -631,6 +773,10 @@ async function handleAppx(
       ProductId: productId,
     };
 
+    // Named dependency map (storelib_rs 0.1.11+) — available straight off the
+    // DCat listing, before the FE3 package round-trip.
+    const dependencies = buildDependencyMap(handler);
+
     let packages: PackageInstance[];
     try {
       packages = await handler.getPackagesForProduct(null, signal);
@@ -703,10 +849,23 @@ async function handleAppx(
       });
     }
 
+    // FE3 expresses the same dependency graph as raw Windows-Update category
+    // GUIDs on each package (`prerequisites`). Summarise the edge counts for
+    // the debug panel; the named map above is the user-facing view.
+    const prereqEdges = packages.reduce((n, p) => n + p.prerequisites.length, 0);
+    const pkgsWithPrereqs = packages.filter((p) => p.prerequisites.length > 0).length;
+
+    // Named per-package dependency graph (who needs whom), keyed on the DCat
+    // FrameworkDependencies and cross-referenced against the resolved packages.
+    const dependencyGraph = buildDependencyGraph(handler, packages);
+    const graphEdges = dependencyGraph.Nodes.reduce((n, node) => n + node.DependsOn.length, 0);
+
     return {
       ProductId: productId,
       AppInfo: appInfo,
       AppxPackages: items,
+      Dependencies: dependencies,
+      DependencyGraph: dependencyGraph,
       ...asWarnings(warnings),
       Debug: {
         ...debug,
@@ -714,6 +873,12 @@ async function handleAppx(
         dcatPackagesWithSha256: sha256ByName.size,
         itemsWithSha256: hashMatched,
         itemsWithSha1: sha1Matched,
+        frameworkDepCount: dependencies.Frameworks.length,
+        platformDepCount: dependencies.Platforms.length,
+        fe3PrereqEdges: prereqEdges,
+        fe3PackagesWithPrereqs: pkgsWithPrereqs,
+        depGraphNodes: dependencyGraph.Nodes.length,
+        depGraphEdges: graphEdges,
       },
     };
   } finally {

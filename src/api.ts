@@ -5,6 +5,8 @@ import {
   inferVersion,
   parseSizeStr,
   type ApiCode,
+  type DependencyGraph,
+  type DependencyMap,
   type NormalizedItem,
   type PackageType,
   type ResolveAllResponse,
@@ -15,6 +17,12 @@ export interface BackendResult {
   items: NormalizedItem[];
   warnings: ApiCode[];
   debug: Record<string, unknown> | null;
+  /** The product's declared dependency map, when the worker is new enough to
+   *  emit one (storelib_rs 0.1.11+). `null` otherwise. */
+  dependencies: DependencyMap | null;
+  /** The per-package dependency graph (who needs whom). `null` when the worker
+   *  didn't surface one or it has no edges. */
+  dependencyGraph: DependencyGraph | null;
   raw: ResolveAllResponse;
 }
 
@@ -197,9 +205,23 @@ export async function callBackend(
       ? raw.Warnings.map((message) => ({ code: "legacy", params: { message } }))
       : [];
 
+  // Only surface a dependency map when it carries something — an empty
+  // `{Frameworks:[],Platforms:[]}` (or its absence on older workers) reads as
+  // "no deps to show" so the UI hides the section entirely.
+  const deps = raw.Dependencies ?? null;
+  const dependencies =
+    deps && (deps.Frameworks.length > 0 || deps.Platforms.length > 0) ? deps : null;
+
+  // Only surface a graph that actually has edges — a single node with no
+  // `DependsOn` is just the app itself and reads as "no dependencies".
+  const graph = raw.DependencyGraph ?? null;
+  const dependencyGraph = graph && graph.Nodes.some((n) => n.DependsOn.length > 0) ? graph : null;
+
   return {
     items: [...flatten(raw.AppxPackages, "APPX"), ...flatten(raw.NonAppxPackages, "Other")],
     warnings,
+    dependencies,
+    dependencyGraph,
     debug: raw.Debug ?? null,
     raw,
   };

@@ -7,7 +7,7 @@
       "dependencies": {
         "@fluentui/react-components": "^9.73.8",
         "@fluentui/react-icons": "^2.0.326",
-        "@query-store-links/storelib_rs": "0.1.10",
+        "@query-store-links/storelib_rs": "0.1.11",
         "react": "^19.2.6",
         "react-dom": "^19.2.6",
       },
@@ -391,7 +391,7 @@
 
     "@poppinss/exception": ["@poppinss/exception@1.2.3", "", {}, "sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw=="],
 
-    "@query-store-links/storelib_rs": ["@query-store-links/storelib_rs@0.1.10", "", {}, "sha512-YtWK21P769Z5YwXrToLXKv97opCQvKTihxCFEKKgqzWxWuy+L2KlM+ZAsbj+mGaZtAgf6SylE3RhZAsijH482g=="],
+    "@query-store-links/storelib_rs": ["@query-store-links/storelib_rs@0.1.11", "", {}, "sha512-dHQ677+8BPf2h9+mSYKd1GfPM8n0L9gjMdBT2mzzcBjO2MuqRGht8yjOlHkArFYyNbgzoTpNqPc9g0l0PMSENg=="],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.0.1", "", { "os": "android", "cpu": "arm64" }, "sha512-fJI3I0r3C3Oj/zdBCpaCmBRZYf07xpaq4yCfDDoSFm+beWNzbIl26puW8RraUdugoJw/95zerNOn6jasAhzSmg=="],
 

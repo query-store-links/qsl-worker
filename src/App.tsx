@@ -48,6 +48,8 @@ import {
 import type {
   ApiCode,
   AppInfo,
+  DependencyGraph,
+  DependencyMap,
   IdentifierType,
   NormalizedItem,
   Ring,
@@ -240,6 +242,8 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
   const [history, setHistory] = useLocalState<HistoryItem[]>("qsl_history", []);
   const [results, setResults] = useState<NormalizedItem[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [dependencies, setDependencies] = useState<DependencyMap | null>(null);
+  const [dependencyGraph, setDependencyGraph] = useState<DependencyGraph | null>(null);
   const [resolvedQuery, setResolvedQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
@@ -290,6 +294,8 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
     setNotice(null);
     setResults([]);
     setAppInfo(null);
+    setDependencies(null);
+    setDependencyGraph(null);
     setResolvedQuery(current.productInput);
 
     try {
@@ -325,6 +331,8 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
       // list (sorted as the worker returned them, with SHA-256 attached).
       setResults(filtered);
       setAppInfo(result.raw.AppInfo ?? null);
+      setDependencies(result.dependencies);
+      setDependencyGraph(result.dependencyGraph);
       setWarnings(result.warnings);
       setDebug(result.debug);
       setBackendHealth("ok");
@@ -678,6 +686,8 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
               results={results}
               query={resolvedQuery}
               appInfo={appInfo}
+              dependencies={dependencies}
+              dependencyGraph={dependencyGraph}
               onCopy={onCopy}
             />
           </div>

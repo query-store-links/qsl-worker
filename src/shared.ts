@@ -45,6 +45,71 @@ export interface DownloadItem {
   Sha1?: string | null;
 }
 
+/** One named runtime/framework dependency DisplayCatalog declares for a
+ *  product — the PFN base (`PackageIdentity`, e.g. `Microsoft.VCLibs.140.00`)
+ *  plus the version it was built against. Sourced from storelib_rs's
+ *  `handler.frameworkDependencies` getter (added in 0.1.11). Versions are
+ *  stringified by the worker since DCat returns them as either ints or
+ *  strings depending on the endpoint. */
+export interface FrameworkDependency {
+  PackageIdentity: string | null;
+  MinVersion: string | null;
+  MaxTested: string | null;
+}
+
+/** A declared platform dependency (`Windows.Universal`, `Windows.Desktop`,
+ *  …). Mirrors storelib_rs's `handler.platformDependencies`. */
+export interface PlatformDependency {
+  PlatformName: string | null;
+  MinVersion: string | null;
+  MaxTested: string | null;
+}
+
+/** The product's declared dependency map: the named framework runtimes it
+ *  pulls in plus the platforms it targets. Empty arrays when DisplayCatalog
+ *  declared none (or for the FE3-only / non-Appx paths, which have no DCat
+ *  listing to read deps from). */
+export interface DependencyMap {
+  Frameworks: FrameworkDependency[];
+  Platforms: PlatformDependency[];
+}
+
+/** One node in the dependency graph — keyed by its PFN identity (the package
+ *  family base, e.g. `Microsoft.VCLibs.140.00.UWPDesktop`). The app's own
+ *  package is a node whose `DependsOn` lists the framework identities it
+ *  declares; each framework is in turn a node (a leaf unless it declares its
+ *  own deps). */
+export interface DependencyNode {
+  /** PFN identity base — stable id used by edges. */
+  Id: string;
+  /** Display name (currently the identity). */
+  Name: string;
+  /** True for a runtime/framework dependency, false for the app itself. */
+  IsFramework: boolean;
+  /** True when a downloadable package with this identity is in the resolved
+   *  result set. `false` marks a framework that's *declared* as a dependency
+   *  but wasn't returned by FE3 (e.g. already considered present). */
+  Resolved: boolean;
+  /** Distinct versions of this identity among the resolved packages. */
+  Versions: string[];
+  /** Distinct architectures among the resolved packages. */
+  Architectures: string[];
+  /** Identities this node directly requires (graph edges). */
+  DependsOn: string[];
+}
+
+/** A directed dependency graph for the resolved product: `package1 needs
+ *  [package2, package3]`, `package2 needs [package4]`, … Built from
+ *  DisplayCatalog's per-package `FrameworkDependencies` (storelib_rs 0.1.11+),
+ *  cross-referenced against the resolved FE3 packages so each edge target is
+ *  marked resolved/unresolved with the concrete versions available. */
+export interface DependencyGraph {
+  Nodes: DependencyNode[];
+  /** Node ids that nothing else depends on — the top of the forest (usually
+   *  the app's own package). The UI renders the tree out from these. */
+  Roots: string[];
+}
+
 /** Structured, localizable message emitted by the worker. The frontend
  *  resolves `code` against its i18n dictionary and interpolates `params`. */
 export interface ApiCode {
@@ -57,6 +122,13 @@ export interface ResolveAllResponse {
   AppInfo?: AppInfo;
   AppxPackages?: DownloadItem[] | null;
   NonAppxPackages?: DownloadItem[] | null;
+  /** The product's declared framework + platform dependency map, read from
+   *  DisplayCatalog (storelib_rs 0.1.11+). Absent on older workers and on the
+   *  non-Appx / WuCategoryId paths, which have no DCat listing. */
+  Dependencies?: DependencyMap | null;
+  /** The per-package dependency graph (who requires whom). Absent on older
+   *  workers and the non-Appx / WuCategoryId paths. */
+  DependencyGraph?: DependencyGraph | null;
   /** Legacy: English-rendered error strings. Kept so non-localizing API
    *  consumers (curl, scripts, older clients) keep working unchanged. New
    *  consumers should prefer {@link ErrorCodes} so they can localize. */

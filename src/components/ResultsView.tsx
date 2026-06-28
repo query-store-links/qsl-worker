@@ -37,7 +37,9 @@ import {
 } from "@fluentui/react-components";
 import {
   ArrowDownloadRegular,
+  ChevronRightRegular,
   CopyRegular,
+  CubeTreeRegular,
   DismissRegular,
   DocumentRegular,
   FilterRegular,
@@ -45,7 +47,15 @@ import {
   OpenRegular,
   WindowConsoleRegular,
 } from "@fluentui/react-icons";
-import { formatBytes, type AppInfo, type NormalizedItem, type PackageType } from "../shared";
+import {
+  formatBytes,
+  type AppInfo,
+  type DependencyGraph,
+  type DependencyMap,
+  type DependencyNode,
+  type NormalizedItem,
+  type PackageType,
+} from "../shared";
 import { useT, type TFn } from "../i18n";
 
 type FilterKey = "all" | PackageType;
@@ -85,7 +95,32 @@ interface ResultsViewProps {
   results: NormalizedItem[];
   query: string;
   appInfo: AppInfo | null;
+  dependencies: DependencyMap | null;
+  dependencyGraph: DependencyGraph | null;
   onCopy: (text: string, what: string) => void;
+}
+
+/** Depth-first flatten of the dependency graph into render rows. Each root is
+ *  expanded into its subtree; an ancestor set guards against cycles (a node
+ *  already on the current path is shown but not re-expanded). A framework
+ *  shared by several parents legitimately appears under each. */
+function flattenGraph(graph: DependencyGraph): { node: DependencyNode; depth: number }[] {
+  const byId = new Map(graph.Nodes.map((n) => [n.Id, n]));
+  const out: { node: DependencyNode; depth: number }[] = [];
+  const visit = (id: string, depth: number, ancestors: Set<string>) => {
+    const node = byId.get(id);
+    if (!node) return;
+    out.push({ node, depth });
+    if (ancestors.has(id)) return;
+    const next = new Set(ancestors);
+    next.add(id);
+    for (const dep of node.DependsOn) visit(dep, depth + 1, next);
+  };
+  for (const root of graph.Roots) visit(root, 0, new Set());
+  // Defensive: surface any node unreachable from a declared root.
+  const seen = new Set(out.map((r) => r.node.Id));
+  for (const n of graph.Nodes) if (!seen.has(n.Id)) out.push({ node: n, depth: 0 });
+  return out;
 }
 
 const useStyles = makeStyles({
@@ -236,6 +271,154 @@ const useStyles = makeStyles({
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
     minWidth: 0,
+  },
+  // ── Dependency map ────────────────────────────────────────────────────
+  // Full-width strip between the header and the filter tabs. Holds the named
+  // framework / platform dependencies DisplayCatalog declares for the
+  // product (storelib_rs 0.1.11+).
+  depsBar: {
+    padding: "10px 20px",
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: "8px",
+    rowGap: "6px",
+    "@media (max-width: 600px)": { padding: "10px 16px" },
+  },
+  depsLabel: {
+    fontSize: "11px",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: tokens.colorNeutralForeground3,
+    marginRight: "2px",
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "6px",
+  },
+  depChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "6px",
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground2,
+    cursor: "pointer",
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusSmall,
+    padding: "2px 8px",
+    backgroundColor: "transparent",
+    fontFamily: "inherit",
+    maxWidth: "100%",
+    minWidth: 0,
+    "&:hover": {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+      color: tokens.colorNeutralForeground1,
+    },
+  },
+  // Platform deps (Windows.Universal, …) are tinted so they read apart from
+  // the runtime framework chips at a glance.
+  depChipPlatform: {
+    border: `1px solid ${tokens.colorBrandStroke2}`,
+    color: tokens.colorBrandForeground2,
+    "&:hover": {
+      backgroundColor: tokens.colorBrandBackground2Hover,
+      color: tokens.colorBrandForeground1,
+    },
+  },
+  depChipName: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  depChipVersion: {
+    color: tokens.colorNeutralForeground4,
+    flexShrink: 0,
+    fontVariantNumeric: "tabular-nums",
+  },
+  // Toggle that expands the chips summary into the full dependency tree.
+  depsToggle: {
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "6px",
+    border: "none",
+    background: "transparent",
+    padding: "2px 4px",
+    margin: "-2px -4px",
+    borderRadius: tokens.borderRadiusSmall,
+    cursor: "pointer",
+    color: "inherit",
+    fontFamily: "inherit",
+    "&:hover": { backgroundColor: tokens.colorNeutralBackground1Hover },
+  },
+  depsChevron: {
+    transition: "transform 120ms ease",
+    color: tokens.colorNeutralForeground3,
+    flexShrink: 0,
+  },
+  depsChevronOpen: { transform: "rotate(90deg)" },
+  // Tree container shown when expanded.
+  depsTree: {
+    padding: "4px 20px 12px",
+    display: "flex",
+    flexDirection: "column",
+    rowGap: "2px",
+    "@media (max-width: 600px)": { padding: "4px 16px 12px" },
+  },
+  depRow: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: "8px",
+    minHeight: "26px",
+    minWidth: 0,
+  },
+  depConnector: {
+    color: tokens.colorNeutralForeground4,
+    flexShrink: 0,
+    fontSize: "12px",
+  },
+  depName: {
+    display: "inline-flex",
+    alignItems: "center",
+    columnGap: "6px",
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground1,
+    cursor: "pointer",
+    border: "none",
+    background: "transparent",
+    padding: 0,
+    fontFamily: "inherit",
+    minWidth: 0,
+    "&:hover": { color: tokens.colorBrandForeground1 },
+  },
+  depNameText: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  depMeta: {
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+    flexShrink: 0,
+    fontVariantNumeric: "tabular-nums",
+  },
+  depDeclared: {
+    fontSize: "10px",
+    color: tokens.colorNeutralForeground4,
+    fontStyle: "italic",
+    flexShrink: 0,
+  },
+  depsTargets: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: "6px",
+    rowGap: "4px",
+    marginTop: "8px",
+    paddingTop: "8px",
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   verifyBtn: {
     display: "inline-flex",
@@ -432,7 +615,14 @@ const useStyles = makeStyles({
   },
 });
 
-export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProps) {
+export function ResultsView({
+  results,
+  query,
+  appInfo,
+  dependencies,
+  dependencyGraph,
+  onCopy,
+}: ResultsViewProps) {
   const styles = useStyles();
   const t = useT();
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -603,6 +793,13 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
         </div>
       </div>
 
+      <DependencySection
+        dependencies={dependencies}
+        graph={dependencyGraph}
+        onCopy={onCopy}
+        t={t}
+      />
+
       <div className={styles.tabsWrap}>
         <TabList
           selectedValue={filter}
@@ -744,6 +941,173 @@ export function ResultsView({ results, query, appInfo, onCopy }: ResultsViewProp
         </Table>
       </div>
     </Card>
+  );
+}
+
+// Dependency surface for the resolved product (DisplayCatalog, via
+// storelib_rs 0.1.11+). The collapsed state is a flat chip summary of the
+// named framework + platform dependencies; expanding reveals the directed
+// graph — `app needs [frameworks]` — when the worker supplied edges. Renders
+// nothing when there's no dependency data (older deployment, FE3-only /
+// non-Appx path).
+function DependencySection({
+  dependencies,
+  graph,
+  onCopy,
+  t,
+}: {
+  dependencies: DependencyMap | null;
+  graph: DependencyGraph | null;
+  onCopy: (text: string, what: string) => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  const [open, setOpen] = useState(false);
+
+  const frameworks = (dependencies?.Frameworks ?? []).filter((d) => d.PackageIdentity);
+  const platforms = (dependencies?.Platforms ?? []).filter((d) => d.PlatformName);
+  const rows = useMemo(() => (graph ? flattenGraph(graph) : []), [graph]);
+  const hasGraph = rows.length > 0;
+
+  if (frameworks.length === 0 && platforms.length === 0 && !hasGraph) return null;
+
+  const total = frameworks.length + platforms.length;
+  const versionHint = (min: string | null, max: string | null): string => {
+    if (min && max) return t("results.deps.versionRange", { min, max });
+    if (min) return t("results.deps.minVersion", { version: min });
+    if (max) return t("results.deps.maxTested", { version: max });
+    return "";
+  };
+
+  const label = (
+    <span className={styles.depsLabel}>
+      {t("results.deps.label")}
+      <CounterBadge count={total} appearance="ghost" color="informative" size="small" />
+    </span>
+  );
+
+  return (
+    <>
+      <div className={styles.depsBar}>
+        {hasGraph ? (
+          <button
+            type="button"
+            className={styles.depsToggle}
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-label={t(open ? "results.deps.collapse" : "results.deps.expand")}
+          >
+            <ChevronRightRegular
+              fontSize={14}
+              className={mergeClasses(styles.depsChevron, open && styles.depsChevronOpen)}
+            />
+            {label}
+          </button>
+        ) : (
+          label
+        )}
+        {frameworks.map((d) => {
+          const name = d.PackageIdentity!;
+          const ver = versionHint(d.MinVersion, d.MaxTested);
+          return (
+            <Tooltip
+              key={`fw:${name}`}
+              content={t("results.deps.framework.tooltip", { name, version: ver || "—" })}
+              relationship="label"
+            >
+              <button
+                type="button"
+                className={`qsl-mono ${styles.depChip}`}
+                onClick={() => onCopy(name, t("results.deps.copy", { name }))}
+                aria-label={t("results.deps.copy", { name })}
+              >
+                <span className={styles.depChipName}>{name}</span>
+                {d.MinVersion && <span className={styles.depChipVersion}>{d.MinVersion}</span>}
+              </button>
+            </Tooltip>
+          );
+        })}
+        {platforms.map((d) => {
+          const name = d.PlatformName!;
+          const ver = versionHint(d.MinVersion, d.MaxTested);
+          return (
+            <Tooltip
+              key={`plat:${name}`}
+              content={t("results.deps.platform.tooltip", { name, version: ver || "—" })}
+              relationship="label"
+            >
+              <button
+                type="button"
+                className={`qsl-mono ${mergeClasses(styles.depChip, styles.depChipPlatform)}`}
+                onClick={() => onCopy(name, t("results.deps.copy", { name }))}
+                aria-label={t("results.deps.copy", { name })}
+              >
+                <span className={styles.depChipName}>{name}</span>
+              </button>
+            </Tooltip>
+          );
+        })}
+      </div>
+
+      {open && hasGraph && (
+        <div className={styles.depsTree}>
+          {rows.map(({ node, depth }, i) => (
+            <DependencyTreeRow
+              key={`${node.Id}:${depth}:${i}`}
+              node={node}
+              depth={depth}
+              onCopy={onCopy}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function DependencyTreeRow({
+  node,
+  depth,
+  onCopy,
+  t,
+}: {
+  node: DependencyNode;
+  depth: number;
+  onCopy: (text: string, what: string) => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  const versions = node.Versions.join(", ");
+  const archs = node.Architectures.join(" · ");
+  return (
+    <div className={styles.depRow} style={{ paddingLeft: `${depth * 18}px` }}>
+      {depth > 0 && <span className={styles.depConnector}>└─</span>}
+      <Tooltip
+        content={t(node.IsFramework ? "results.deps.node.framework" : "results.deps.node.app", {
+          name: node.Id,
+        })}
+        relationship="label"
+      >
+        <button
+          type="button"
+          className={`qsl-mono ${styles.depName}`}
+          onClick={() => onCopy(node.Id, t("results.deps.copy", { name: node.Id }))}
+          aria-label={t("results.deps.copy", { name: node.Id })}
+        >
+          {node.IsFramework ? <CubeTreeRegular fontSize={13} /> : <DocumentRegular fontSize={13} />}
+          <span className={styles.depNameText}>{node.Name}</span>
+        </button>
+      </Tooltip>
+      <Badge appearance="tint" color={node.IsFramework ? "informative" : "brand"} size="small">
+        {t(node.IsFramework ? "results.deps.badge.framework" : "results.deps.badge.app")}
+      </Badge>
+      {versions && <span className={styles.depMeta}>{versions}</span>}
+      {archs && <span className={`qsl-mono ${styles.depMeta}`}>{archs}</span>}
+      {!node.Resolved && (
+        <span className={styles.depDeclared}>{t("results.deps.declaredOnly")}</span>
+      )}
+    </div>
   );
 }
 
