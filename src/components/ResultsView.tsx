@@ -607,11 +607,19 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     fontStyle: "italic",
   },
+  // Fluent's DialogActions lays its children out in a content-width,
+  // responsive grid that squeezes 4 buttons into a narrow centered column.
+  // Force the actions area full width and lay the buttons out ourselves as a
+  // right-aligned wrapping row.
+  dialogActions: { width: "100%", maxWidth: "100%", justifyContent: "flex-end" },
   dialogActionsGroup: {
     display: "flex",
     flexWrap: "wrap",
-    columnGap: "6px",
-    rowGap: "6px",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    columnGap: "8px",
+    rowGap: "8px",
+    width: "100%",
   },
 });
 
@@ -1374,7 +1382,7 @@ function DetailsDialog({
             />
             <HashSection algo="sha1" value={item.sha1} fileName={item.name} onCopy={onCopy} t={t} />
           </DialogContent>
-          <DialogActions>
+          <DialogActions className={styles.dialogActions}>
             <div className={styles.dialogActionsGroup}>
               <Button
                 appearance="subtle"
