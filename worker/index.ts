@@ -72,51 +72,6 @@ function bytesToString(n: number | bigint | null | undefined): string {
   return `${rounded}${suffixes[place]}`;
 }
 
-// storelib's `PackageInstance.digest` is the FE3 `<File Digest>` attribute,
-// which Microsoft Update returns base64-encoded (20 bytes → 28 chars for
-// SHA-1, 32 bytes → 44 chars for SHA-256). The UI verifies hashes against
-// `sha1sum` / `Get-FileHash` output, both of which speak lowercase hex, so
-// normalise to hex here. Already-hex inputs (40 or 64 chars) pass through
-// untouched in case a future storelib release switches encodings.
-function digestToHex(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const s = raw.trim();
-  if (!s) return null;
-  if ((s.length === 40 || s.length === 64) && /^[0-9a-fA-F]+$/.test(s)) {
-    return s.toLowerCase();
-  }
-  try {
-    const bin = atob(s);
-    let hex = "";
-    for (let i = 0; i < bin.length; i++) {
-      hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
-    }
-    return hex || null;
-  } catch {
-    return null;
-  }
-}
-
-// Pick a specific algorithm's digest off a PackageInstance. Looks at the
-// primary `<File Digest>` (`digest` + `digestAlgorithm`) first, then any
-// `<AdditionalDigest Algorithm="...">` children. Returns lowercase hex.
-function pickDigest(pkg: PackageInstance, algo: "SHA1" | "SHA256"): string | null {
-  // Accept "SHA1" / "sha-1" / "Sha 1" — strip non-alphanumerics so the
-  // matcher doesn't care about MS Update's occasional formatting drift.
-  const norm = (s: string | null | undefined) => s?.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  if (pkg.digest && norm(pkg.digestAlgorithm) === algo) {
-    const hex = digestToHex(pkg.digest);
-    if (hex) return hex;
-  }
-  for (const d of pkg.additionalDigests) {
-    if (norm(d.algorithm) === algo) {
-      const hex = digestToHex(d.value);
-      if (hex) return hex;
-    }
-  }
-  return null;
-}
-
 // DisplayCatalog returns dependency `minVersion` / `maxTested` as either a
 // version string ("14.0.33728.0") or a packed integer depending on the
 // endpoint — storelib types them as `any`. Coerce to a display string and
@@ -495,8 +450,8 @@ async function handleNonAppx(
 // DCat doesn't accept WuCategoryId as a lookup key, so this path skips it
 // entirely and drives FE3 directly. Product metadata (title, publisher,
 // description) isn't available, so AppInfo carries placeholder strings and
-// the WuCategoryId is echoed as both CategoryId and ProductId. SHA-256 is
-// not surfaced either — FE3's `<File Digest>` is SHA-1 in practice.
+// the WuCategoryId is echoed as both CategoryId and ProductId. Hashes still
+// come off each PackageInstance (`sha1` / `sha256`) since FE3 supplies them.
 
 async function handleWuCategoryId(
   wuCategoryId: string,
@@ -685,8 +640,8 @@ async function handleWuCategoryId(
         FileName: pkg.readableFileName || pkg.packageMoniker || "Unknown",
         FileLink: uri,
         FileSize: bytesToString(size),
-        Sha256: pickDigest(pkg, "SHA256"),
-        Sha1: pickDigest(pkg, "SHA1"),
+        Sha256: pkg.sha256,
+        Sha1: pkg.sha1,
       });
     }
     emit("fe3.done", `${items.length} package(s) resolved`);
@@ -790,39 +745,15 @@ async function handleAppx(
       };
     }
 
-    // SHA-256 lives on the DCat-side `Package` metadata (handler.packages),
-    // keyed by `packageFullName`. The FE3 `packageMoniker` is the same
-    // identity but uses `~` as the empty-ResourceID placeholder, so DCat's
-    // `Name_Ver_Arch__PubHash` shows up as `Name_Ver_Arch_~_PubHash` here.
-    // Normalise both sides to a common key. We also accept matches by
-    // `packageId` (Package) ↔ `applicabilityBlob["content.packageId"]`
-    // (PackageInstance) when the name-based join misses.
-    const normalizeKey = (s: string): string => s.replace(/_~_/g, "__");
-    const sha256ByName = new Map<string, string>();
-    const sha256ByPackageId = new Map<string, string>();
-    for (const p of handler.packages) {
-      const hash = p.hash;
-      const algo = p.hashAlgorithm;
-      if (!hash) continue;
-      if (algo && algo.toLowerCase() !== "sha256") continue;
-      const lower = hash.toLowerCase();
-      if (p.packageFullName) sha256ByName.set(normalizeKey(p.packageFullName), lower);
-      if (p.packageId) sha256ByPackageId.set(p.packageId, lower);
-    }
-    const lookupSha = (pkg: PackageInstance): string | null => {
-      const nameKey = normalizeKey(pkg.packageMoniker);
-      const byName = sha256ByName.get(nameKey);
-      if (byName) return byName;
-      const pid = pkg.applicabilityBlob?.["content.packageId"];
-      if (pid) {
-        const byId = sha256ByPackageId.get(pid);
-        if (byId) return byId;
-      }
-      return null;
-    };
-
+    // Hashes come ready-to-use off each PackageInstance (storelib_rs
+    // 0.1.11-fix-1): `sha1` / `sha256` are lowercase hex of the exact bytes
+    // FE3 serves, decoded from the `<File Digest>` / `<AdditionalDigest>`.
+    // We do NOT use DisplayCatalog's `Package.hash` — it's base64 and the
+    // storefront catalog can list a different *version* than FE3 serves, so
+    // it never reliably matches the download.
+    //
     // PackageInstance carries packageSize (FE3-reported bytes) and a
-    // pre-formatted readableFileName — no HEAD requests needed any more.
+    // pre-formatted readableFileName — no HEAD requests needed.
     //
     // FE3's update graph can surface the same package under multiple update
     // IDs, so storelib may return multiple PackageInstances for one file.
@@ -836,8 +767,8 @@ async function handleAppx(
       const key = pkg.packageUri || pkg.packageMoniker;
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      const sha256 = lookupSha(pkg) ?? pickDigest(pkg, "SHA256");
-      const sha1 = pickDigest(pkg, "SHA1");
+      const sha256 = pkg.sha256;
+      const sha1 = pkg.sha1;
       if (sha256) hashMatched++;
       if (sha1) sha1Matched++;
       items.push({
@@ -870,7 +801,6 @@ async function handleAppx(
       Debug: {
         ...debug,
         dcatPackageCount: handler.packages.length,
-        dcatPackagesWithSha256: sha256ByName.size,
         itemsWithSha256: hashMatched,
         itemsWithSha1: sha1Matched,
         frameworkDepCount: dependencies.Frameworks.length,
@@ -1570,7 +1500,7 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
 //   dir=<path>                            download target (default temp)
 //   force=1                               Add-AppxPackage -ForceApplicationShutdown
 //   launch=1 / run=1                      launch the app after install
-//   verify=0                              skip the SHA-1 check (default on)
+//   verify=0                              skip the SHA-256 check (default on)
 //   match=<regex>                         filter candidate filenames
 //   type=<IdentifierType>                 pin the identifier type (else detected)
 //   market=<US> / lang=<en-US>            locale overrides
@@ -1598,12 +1528,9 @@ interface PsiPkg {
   arch: string;
   version: string;
   size: number;
-  // TEMP: verify against the FE3 `<File Digest>` (SHA-1) instead of the
-  // DCat-sourced SHA-256. The SHA-256 is joined from DisplayCatalog metadata
-  // by package name and can mismatch the bytes FE3 actually serves; the SHA-1
-  // is the digest of this exact file, so it always matches. Revisit once the
-  // SHA-256 join is made reliable.
-  sha1: string;
+  // SHA-256 of the served bytes (storelib_rs `PackageInstance.sha256`,
+  // lowercase hex) — verify the download against `Get-FileHash`.
+  sha256: string;
   isBundle: boolean;
   isFramework: boolean;
   kind: "appx" | "installer";
@@ -1698,7 +1625,7 @@ function buildPsiPackages(
       arch: archFromFileName(name),
       version: versionFromFileName(name),
       size: Math.round(sizeStringToBytes(it.FileSize ?? "")),
-      sha1: (it.Sha1 ?? "").toLowerCase(),
+      sha256: (it.Sha256 ?? "").toLowerCase(),
       isBundle: isBundleFileName(name),
       isFramework: kind === "appx" ? isFrameworkFileName(name) : false,
       kind,
@@ -1859,11 +1786,11 @@ function Save-Package($p, $dir) {
   }
   $sw.Stop()
   Write-Info ("  done: {0:n1} MB in {1:n1}s" -f ((Get-Item $dest).Length / 1MB), $sw.Elapsed.TotalSeconds)
-  if ($Cfg.Verify -and $p.Sha1) {
-    Write-Info "  verifying SHA-1 ..."
-    $h = (Get-FileHash -Algorithm SHA1 -Path $dest).Hash
-    if ($h -ne $p.Sha1.ToUpper()) { throw "SHA-1 mismatch for $($p.Name)" }
-    Write-Info "  SHA-1 OK"
+  if ($Cfg.Verify -and $p.Sha256) {
+    Write-Info "  verifying SHA-256 ..."
+    $h = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash
+    if ($h -ne $p.Sha256.ToUpper()) { throw "SHA-256 mismatch for $($p.Name)" }
+    Write-Info "  SHA-256 OK"
   }
   return $dest
 }
@@ -2173,7 +2100,7 @@ async function handlePsi(request: Request, env: Env): Promise<Response> {
       Arch: p.arch,
       Version: p.version,
       Size: p.size,
-      Sha1: p.sha1,
+      Sha256: p.sha256,
       IsBundle: p.isBundle,
       IsFramework: p.isFramework,
       Kind: p.kind,
