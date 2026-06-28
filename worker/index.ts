@@ -2026,7 +2026,13 @@ function Invoke-Psi {
   # the ones not already present.
   Write-Step "Resolving dependencies"
   $needPaths = @()
-  $declared = if ($Cfg.Deps) { @(Get-PackageDeps $mainPath $arch) } else { @() }
+  # NB: assign @(...) directly, never via "if (...) { @(...) }". PowerShell
+  # unwraps a single-element array returned from an if-expression to a scalar,
+  # so a package with exactly ONE dependency would arrive here as a bare object
+  # whose .Count is $null — making us wrongly report "no dependencies" and skip
+  # it (e.g. Windows Terminal, which depends only on Microsoft.UI.Xaml.2.8).
+  $declared = @()
+  if ($Cfg.Deps) { $declared = @(Get-PackageDeps $mainPath $arch) }
   if (-not $Cfg.Deps) {
     Write-Info "dependency handling disabled"
   } elseif (-not $declared.Count) {
