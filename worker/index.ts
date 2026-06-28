@@ -1548,6 +1548,628 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
   });
 }
 
+// ── PowerShell installer — GET /psi/<id> ────────────────────────────────
+//
+// `irm https://<host>/psi/<id> | iex` resolves the identifier through the
+// same pipeline as `/api/links/resolve-all`, then returns a self-contained
+// PowerShell script that downloads and installs the package(s) with
+// `Add-AppxPackage` (or runs the installer for non-Appx / winget products).
+//
+// The script embeds the full resolved package set and does selection
+// *client-side* — architecture is detected on the machine running the
+// script (`$env:PROCESSOR_ARCHITECTURE`), which the server can't see.
+//
+// Query parameters (all optional; sensible auto-detection when omitted)
+// --------------------------------------------------------------------
+//   arch=x64|x86|x32|arm64|arm|neutral   pin an architecture (else auto)
+//   version=<v>|latest                    pin a version (else latest)
+//   deps=true|false                       install framework dependencies (default true)
+//   ui=1                                  interactive: pick package + action
+//   dryrun=1 / whatif=1                   print the plan, install nothing
+//   downloadonly=1 / noinstall=1          download but don't install
+//   dir=<path>                            download target (default temp)
+//   force=1                               Add-AppxPackage -ForceApplicationShutdown
+//   launch=1 / run=1                      launch the app after install
+//   verify=0                              skip the SHA-256 check (default on)
+//   match=<regex>                         filter candidate filenames
+//   type=<IdentifierType>                 pin the identifier type (else detected)
+//   market=<US> / lang=<en-US>            locale overrides
+
+interface PsiQuery {
+  arch: string; // "" = auto-detect
+  version: string; // "" / "latest" = newest
+  deps: boolean;
+  ui: boolean;
+  dryRun: boolean;
+  force: boolean;
+  launch: boolean;
+  verify: boolean;
+  downloadOnly: boolean;
+  dir: string;
+  market?: string;
+  lang?: string;
+  type?: string;
+  match?: RegExp;
+}
+
+interface PsiPkg {
+  name: string;
+  url: string;
+  arch: string;
+  version: string;
+  size: number;
+  sha256: string;
+  isBundle: boolean;
+  isFramework: boolean;
+  kind: "appx" | "installer";
+}
+
+const PSI_PATH_RE = /^\/psi\/[^/?#]+\/?$/i;
+
+function isPsiPermalink(pathname: string): boolean {
+  return PSI_PATH_RE.test(pathname);
+}
+
+function parsePsiPath(pathname: string): string | null {
+  const m = pathname.match(/^\/psi\/(.+?)\/?$/i);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
+
+function psiBool(sp: URLSearchParams, key: string, dflt: boolean): boolean {
+  const v = sp.get(key);
+  if (v == null) return dflt;
+  const s = v.toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+  return dflt;
+}
+
+// Normalise an architecture alias to the moniker form. Unknown → "" (auto).
+function normalizePsiArch(raw: string | null): string {
+  if (!raw) return "";
+  const s = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (s === "x64" || s === "amd64" || s === "x8664" || s === "win64") return "x64";
+  if (s === "x86" || s === "x32" || s === "ia32" || s === "win32" || s === "i386") return "x86";
+  if (s === "arm64" || s === "aarch64") return "arm64";
+  if (s === "arm" || s === "arm32") return "arm";
+  if (s === "neutral" || s === "any" || s === "anycpu") return "neutral";
+  return "";
+}
+
+function versionFromFileName(name: string): string {
+  const m = name.match(/_(\d+\.\d+\.\d+\.\d+)_/);
+  return m?.[1] ?? "";
+}
+
+function parsePsiQuery(url: URL): PsiQuery {
+  const sp = url.searchParams;
+  let match: RegExp | undefined;
+  const matchRaw = sp.get("match");
+  if (matchRaw) {
+    try {
+      match = new RegExp(matchRaw, "i");
+    } catch {
+      /* ignore a bad regex — treat as no filter */
+    }
+  }
+  return {
+    arch: normalizePsiArch(sp.get("arch")),
+    version: (sp.get("version") ?? "").trim(),
+    deps: psiBool(sp, "deps", true),
+    ui: psiBool(sp, "ui", false),
+    dryRun: psiBool(sp, "dryrun", false) || psiBool(sp, "whatif", false),
+    force: psiBool(sp, "force", false),
+    launch: psiBool(sp, "launch", false) || psiBool(sp, "run", false),
+    verify: psiBool(sp, "verify", true),
+    downloadOnly: psiBool(sp, "downloadonly", false) || psiBool(sp, "noinstall", false),
+    dir: (sp.get("dir") ?? "").trim(),
+    market: sp.get("market") ?? undefined,
+    lang: sp.get("lang") ?? sp.get("locale") ?? undefined,
+    type: sp.get("type") ?? undefined,
+    match,
+  };
+}
+
+function buildPsiPackages(
+  items: DownloadItem[],
+  kind: "appx" | "installer",
+  match?: RegExp,
+): PsiPkg[] {
+  const out: PsiPkg[] = [];
+  for (const it of items) {
+    const name = it.FileName ?? "";
+    if (!it.FileLink) continue;
+    // Skip blockmaps and DRM-encrypted variants — not installable.
+    if (isAuxiliaryFileName(name)) continue;
+    if (match && !match.test(name)) continue;
+    out.push({
+      name,
+      url: it.FileLink,
+      arch: archFromFileName(name),
+      version: versionFromFileName(name),
+      size: Math.round(sizeStringToBytes(it.FileSize ?? "")),
+      sha256: (it.Sha256 ?? "").toLowerCase(),
+      isBundle: isBundleFileName(name),
+      isFramework: kind === "appx" ? isFrameworkFileName(name) : false,
+      kind,
+    });
+  }
+  return out;
+}
+
+// PowerShell single-quoted string literal with embedded quotes doubled.
+function psStr(s: string | null | undefined): string {
+  return "'" + String(s ?? "").replace(/'/g, "''") + "'";
+}
+
+function psBoolLit(b: boolean): string {
+  return b ? "$true" : "$false";
+}
+
+function psiResponse(script: string): Response {
+  return new Response(script, {
+    status: 200,
+    headers: {
+      // text/plain so `Invoke-RestMethod` hands the body to `iex` as a string
+      // (an application/* type would make it try to parse the script).
+      "content-type": "text/plain; charset=utf-8",
+      // FE3 download URLs are time-limited; never cache a stale script.
+      "cache-control": "no-store",
+    },
+  });
+}
+
+// A script that just surfaces an error to the user — returned (with HTTP 200,
+// so `irm` doesn't throw before `iex` can show it) when resolution fails.
+function psiErrorScript(message: string): string {
+  return [
+    "Write-Host 'Query Store Links installer' -ForegroundColor Cyan",
+    `Write-Error ${psStr(message)}`,
+    "",
+  ].join("\n");
+}
+
+function generatePsiScript(id: string, q: PsiQuery, dataUrl: string): string {
+  // NOTE: this is a PowerShell source template embedded in a JS template
+  // literal. Keep it free of backticks (PS escape char — would break the JS
+  // string) and `${` sequences (use `$(...)` / `$var`); literal backslashes
+  // must be written doubled.
+  //
+  // This is a *bootstrap*: it carries no packages. It fetches them from the
+  // `?format=json` data endpoint at runtime (`Get-PsiData`), which is where
+  // the slow catalog/FE3 resolve happens — so the user gets a live
+  // "Querying..." status instead of an unexplained pause while `irm` waits.
+  return `# Query Store Links - PowerShell Installer (psi)
+# ${id}
+# Generated for: irm <host>/psi/${id} | iex
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+$Cfg = [pscustomobject]@{
+  Id           = ${psStr(id)}
+  Name         = ${psStr(id)}
+  DataUrl      = ${psStr(dataUrl)}
+  Arch         = ${psStr(q.arch)}
+  Version      = ${psStr(q.version)}
+  Deps         = ${psBoolLit(q.deps)}
+  Ui           = ${psBoolLit(q.ui)}
+  DryRun       = ${psBoolLit(q.dryRun)}
+  Force        = ${psBoolLit(q.force)}
+  Launch       = ${psBoolLit(q.launch)}
+  Verify       = ${psBoolLit(q.verify)}
+  DownloadOnly = ${psBoolLit(q.downloadOnly)}
+  Dir          = ${psStr(q.dir)}
+}
+
+# Resolve the product server-side (catalog + FE3) and return the installable
+# package set. The resolve is the slow part, so announce it up front and
+# report how long it took once the data lands.
+function Get-PsiData {
+  Write-Step "Querying Microsoft Store catalog for $($Cfg.Id) ..."
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  try {
+    $d = Invoke-RestMethod -Uri $Cfg.DataUrl -Headers @{ Accept = 'application/json' }
+  } catch {
+    throw "Could not reach the resolver ($($Cfg.DataUrl)): $_"
+  }
+  $sw.Stop()
+  if (-not $d.ok) { throw "$($d.error)" }
+  if ($d.name) { $Cfg.Name = $d.name }
+  $pkgs = @($d.packages)
+  Write-Info ("resolved {0} package(s) in {1:n1}s" -f $pkgs.Count, $sw.Elapsed.TotalSeconds)
+  return ,$pkgs
+}
+
+function Write-Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
+function Write-Info($m) { Write-Host "    $m" -ForegroundColor DarkGray }
+
+function Get-HostArch {
+  $a = $env:PROCESSOR_ARCHITEW6432
+  if (-not $a) { $a = $env:PROCESSOR_ARCHITECTURE }
+  switch ("$a".ToUpper()) {
+    'AMD64' { 'x64' }
+    'ARM64' { 'arm64' }
+    'X86'   { 'x86' }
+    'ARM'   { 'arm' }
+    default { 'x64' }
+  }
+}
+
+function Select-ByVersion($list, $want) {
+  if ($want -and $want -ne 'latest') {
+    $f = @($list | Where-Object { $_.Version -like "$want*" })
+    if ($f.Count) { return $f }
+    Write-Warning "No package matched version '$want'; using the latest instead."
+  }
+  $valid = @($list | Where-Object { $_.Version -as [version] })
+  if ($valid.Count) {
+    $max = ($valid | Sort-Object { [version]$_.Version } | Select-Object -Last 1).Version
+    return @($list | Where-Object { $_.Version -eq $max })
+  }
+  return $list
+}
+
+function Select-ByArch($list, $arch) {
+  $bundle = @($list | Where-Object { $_.IsBundle })
+  if ($bundle.Count) { return ($bundle | Sort-Object Size -Descending | Select-Object -First 1) }
+  $order = switch ($arch) {
+    'x64'   { @('x64','x86','neutral') }
+    'x86'   { @('x86','neutral') }
+    'arm64' { @('arm64','arm','x86','x64','neutral') }
+    'arm'   { @('arm','neutral') }
+    default { @($arch,'neutral') }
+  }
+  foreach ($a in $order) {
+    $c = @($list | Where-Object { $_.Arch -eq $a } | Sort-Object Size -Descending)
+    if ($c.Count) { return $c[0] }
+  }
+  return ($list | Sort-Object Size -Descending | Select-Object -First 1)
+}
+
+function Save-Package($p, $dir) {
+  $dest = Join-Path $dir $p.Name
+  Write-Info "downloading $($p.Name)  ($([math]::Round($p.Size / 1MB, 1)) MB)"
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $done = $false
+  # Prefer BITS: it shows a native progress bar and streams large bundles
+  # efficiently. Fall back to Invoke-WebRequest where BITS isn't available.
+  try {
+    Import-Module BitsTransfer -ErrorAction Stop
+    $pp = $ProgressPreference
+    $ProgressPreference = 'Continue'
+    try {
+      Start-BitsTransfer -Source $p.Url -Destination $dest -Description $p.Name -ErrorAction Stop
+      $done = $true
+    } finally { $ProgressPreference = $pp }
+  } catch { $done = $false }
+  if (-not $done) {
+    $pp = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try { Invoke-WebRequest -Uri $p.Url -OutFile $dest -UseBasicParsing } finally { $ProgressPreference = $pp }
+  }
+  $sw.Stop()
+  Write-Info ("  done: {0:n1} MB in {1:n1}s" -f ((Get-Item $dest).Length / 1MB), $sw.Elapsed.TotalSeconds)
+  if ($Cfg.Verify -and $p.Sha256) {
+    Write-Info "  verifying SHA-256 ..."
+    $h = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash
+    if ($h -ne $p.Sha256.ToUpper()) { throw "SHA-256 mismatch for $($p.Name)" }
+    Write-Info "  SHA-256 OK"
+  }
+  return $dest
+}
+
+# True when a package named $name (this arch or neutral) is installed at a
+# version >= $minVer. Any probe failure returns $false.
+function Test-Installed($name, $minVer, $arch) {
+  try {
+    $min = $minVer -as [version]
+    $hit = Get-AppxPackage -Name $name -ErrorAction SilentlyContinue | Where-Object {
+      ($_.Architecture -ieq $arch -or $_.Architecture -ieq 'neutral') -and
+      (-not $min -or (($_.Version -as [version]) -ge $min))
+    }
+    return [bool]$hit
+  } catch { return $false }
+}
+
+# Read the <PackageDependency> entries (Name + MinVersion) a downloaded package
+# declares. For a bundle, drill into the app package matching $arch (else
+# neutral). Returns @() on any failure so the caller falls back to a plain
+# install. This is the authority on what to hand Add-AppxPackage: it rejects
+# the whole install if given a framework the package does NOT depend on
+# ("provided but not used"), so we must never supply extras.
+function Get-PackageDeps($path, $arch) {
+  try {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
+    try {
+      $readXml = {
+        param($entry)
+        $sr = New-Object System.IO.StreamReader($entry.Open())
+        try { [xml]$sr.ReadToEnd() } finally { $sr.Dispose() }
+      }
+      $bundleEntry = $zip.Entries | Where-Object { $_.FullName -ieq 'AppxMetadata/AppxBundleManifest.xml' } | Select-Object -First 1
+      if ($bundleEntry) {
+        $bx = & $readXml $bundleEntry
+        $apps = @($bx.Bundle.Packages.Package | Where-Object { $_.Type -eq 'application' })
+        $sel = @($apps | Where-Object { $_.Architecture -ieq $arch })[0]
+        if (-not $sel) { $sel = @($apps | Where-Object { $_.Architecture -ieq 'neutral' })[0] }
+        if (-not $sel) { $sel = $apps[0] }
+        if (-not $sel) { return @() }
+        $inner = $zip.Entries | Where-Object { $_.FullName -ieq $sel.FileName } | Select-Object -First 1
+        if (-not $inner) { return @() }
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString('N') + '.appx')
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($inner, $tmp, $true)
+        try { return (Get-PackageDeps $tmp $arch) } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+      }
+      $manEntry = $zip.Entries | Where-Object { $_.FullName -ieq 'AppxManifest.xml' } | Select-Object -First 1
+      if (-not $manEntry) { return @() }
+      $mx = & $readXml $manEntry
+      $out = @()
+      foreach ($pd in @($mx.Package.Dependencies.PackageDependency)) {
+        if ($pd -and $pd.Name) { $out += [pscustomobject]@{ Name = "$($pd.Name)"; MinVersion = "$($pd.MinVersion)" } }
+      }
+      return $out
+    } finally { $zip.Dispose() }
+  } catch { return @() }
+}
+
+function Invoke-Psi {
+  Write-Host ""
+  Write-Host "Query Store Links installer" -ForegroundColor Cyan
+
+  $Packages = Get-PsiData
+  Write-Host "$($Cfg.Name) [$($Cfg.Id)]" -ForegroundColor White
+
+  $arch = if ($Cfg.Arch) { $Cfg.Arch } else { Get-HostArch }
+  Write-Info "architecture: $arch$(if (-not $Cfg.Arch) { ' (auto-detected)' })"
+
+  $appx = @($Packages | Where-Object { $_.Kind -eq 'appx' })
+  $installers = @($Packages | Where-Object { $_.Kind -eq 'installer' })
+
+  # Non-Appx (winget) product: download and run the installer.
+  if ($appx.Count -eq 0 -and $installers.Count -gt 0) {
+    $pick = Select-ByArch $installers $arch
+    if ($Cfg.Ui) {
+      Write-Host "Installers:" -ForegroundColor White
+      for ($i = 0; $i -lt $installers.Count; $i++) {
+        Write-Host ("  [{0}] {1} [{2}]" -f $i, $installers[$i].Name, $installers[$i].Arch)
+      }
+      $sel = Read-Host "Select index (Enter for $($pick.Name))"
+      if ($sel -ne '') { $pick = $installers[[int]$sel] }
+    }
+    if ($Cfg.DryRun) {
+      Write-Host "[dry-run] would download and run $($pick.Name)" -ForegroundColor Yellow
+      return
+    }
+    $dir = if ($Cfg.Dir) { $Cfg.Dir } else { Join-Path ([System.IO.Path]::GetTempPath()) ("qsl_" + [System.Guid]::NewGuid().ToString('N')) }
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Write-Step "Downloading installer"
+    $path = Save-Package $pick $dir
+    if ($Cfg.DownloadOnly) { Write-Host "Saved to $path" -ForegroundColor Green; return }
+    Write-Step "Running installer"
+    Start-Process -FilePath $path -Wait
+    Write-Host "Done." -ForegroundColor Green
+    return
+  }
+
+  if ($appx.Count -eq 0) { throw "No installable packages were returned for this identifier." }
+
+  $mains = @($appx | Where-Object { -not $_.IsFramework })
+  $fws = @($appx | Where-Object { $_.IsFramework })
+  if ($mains.Count -eq 0) { $mains = $appx }
+
+  $mains = @(Select-ByVersion $mains $Cfg.Version)
+  $pick = Select-ByArch $mains $arch
+
+  if ($Cfg.Ui) {
+    Write-Host "Packages:" -ForegroundColor White
+    for ($i = 0; $i -lt $mains.Count; $i++) {
+      $m = $mains[$i]
+      Write-Host ("  [{0}] {1}  [{2}] v{3}  {4} MB" -f $i, $m.Name, $m.Arch, $m.Version, [math]::Round($m.Size / 1MB, 1))
+    }
+    $sel = Read-Host "Select index to install (Enter for $($pick.Name))"
+    if ($sel -ne '') { $pick = $mains[[int]$sel] }
+    $act = Read-Host "Action: [I]nstall / [D]ownload only / [C]ancel (default I)"
+    switch ("$act".ToUpper()) {
+      'C' { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+      'D' { $Cfg.DownloadOnly = $true }
+      default { }
+    }
+  }
+
+  Write-Info "selected: $($pick.Name)"
+  Write-Info "  $($pick.Arch) | v$($pick.Version) | $([math]::Round($pick.Size / 1MB, 1)) MB"
+
+  if ($Cfg.DryRun) {
+    Write-Host "[dry-run] plan:" -ForegroundColor Yellow
+    Write-Host "  install: $($pick.Name)"
+    Write-Host "  dependencies: read from the package manifest after download; only the"
+    Write-Host "                declared frameworks that aren't already installed are fetched."
+    return
+  }
+
+  # Already up to date? Skip unless a reinstall is forced. In-box apps (the
+  # Store itself, etc.) are preinstalled, so a same-version Add-AppxPackage
+  # would just error — short-circuit with a clear message instead.
+  $mainName = ($pick.Name -split '_')[0]
+  $pv = $pick.Version -as [version]
+  if ($pv -and -not $Cfg.Force -and -not $Cfg.DownloadOnly) {
+    $have = Get-AppxPackage -Name $mainName -ErrorAction SilentlyContinue |
+      Where-Object { ($_.Version -as [version]) -ge $pv } | Select-Object -First 1
+    if ($have) {
+      Write-Host "Already installed: $mainName v$($have.Version)  (pass ?force=1 to reinstall)." -ForegroundColor Green
+      return
+    }
+  }
+
+  $dir = if ($Cfg.Dir) { $Cfg.Dir } else { Join-Path ([System.IO.Path]::GetTempPath()) ("qsl_" + [System.Guid]::NewGuid().ToString('N')) }
+  New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+  Write-Step "Downloading package"
+  $mainPath = Save-Package $pick $dir
+
+  # Resolve dependencies from the package's OWN manifest — the only authority
+  # on what it needs. DisplayCatalog/FE3 list legacy framework lines an app no
+  # longer depends on (e.g. *.Native.*.1.7 next to 2.2, UI.Xaml.2.4 next to
+  # 2.8); handing any of those to Add-AppxPackage fails the whole install with
+  # "provided but not used". So we supply ONLY declared frameworks, and only
+  # the ones not already present.
+  Write-Step "Resolving dependencies"
+  $needPaths = @()
+  $declared = if ($Cfg.Deps) { @(Get-PackageDeps $mainPath $arch) } else { @() }
+  if (-not $Cfg.Deps) {
+    Write-Info "dependency handling disabled"
+  } elseif (-not $declared.Count) {
+    Write-Info "package manifest declares no framework dependencies (or could not be read)"
+  } else {
+    Write-Info "manifest declares $($declared.Count) framework dependency(ies)"
+    foreach ($wd in $declared) {
+      $present = Test-Installed $wd.Name $wd.MinVersion $arch
+      $cand = @($fws | Where-Object {
+          ((($_.Name -split '_')[0]) -ieq $wd.Name) -and ($_.Arch -ieq $arch -or $_.Arch -ieq 'neutral')
+        } | Sort-Object { $_.Version -as [version] } | Select-Object -Last 1)
+      if ($present -and -not $Cfg.DownloadOnly) {
+        Write-Info "  present: $($wd.Name) (>= $($wd.MinVersion))"
+      } elseif ($cand.Count) {
+        Write-Info "  fetch:   $($wd.Name) (>= $($wd.MinVersion))"
+        $needPaths += (Save-Package $cand[0] $dir)
+      } else {
+        Write-Warning "  required but unavailable for download: $($wd.Name) (>= $($wd.MinVersion))"
+      }
+    }
+  }
+
+  if ($Cfg.DownloadOnly) {
+    Write-Host "Saved to $dir" -ForegroundColor Green
+    return
+  }
+
+  Write-Step "Installing $($Cfg.Name)"
+  $params = @{ Path = $mainPath }
+  if ($needPaths.Count) {
+    $params['DependencyPath'] = $needPaths
+    Write-Info "registering with $($needPaths.Count) dependency package(s) ..."
+  } else {
+    Write-Info "registering package (all dependencies already present) ..."
+  }
+  if ($Cfg.Force) { $params['ForceApplicationShutdown'] = $true }
+  Add-AppxPackage @params
+  Write-Host "Installed $($Cfg.Name)." -ForegroundColor Green
+
+  if ($Cfg.Launch) {
+    try {
+      $idName = ($pick.Name -split '_')[0]
+      $installed = Get-AppxPackage -Name $idName | Select-Object -First 1
+      if ($installed) {
+        $manifest = Get-AppxPackageManifest $installed
+        $appId = @($manifest.Package.Applications.Application.Id)[0]
+        if ($appId) {
+          Start-Process ("shell:appsFolder\\" + $installed.PackageFamilyName + "!" + $appId)
+          Write-Info "launched"
+        }
+      }
+    } catch { Write-Warning "Could not launch the app automatically: $_" }
+  }
+}
+
+try { Invoke-Psi }
+catch {
+  Write-Host ""
+  Write-Error "Install failed: $_"
+  Write-Host "If this is a signing/sideloading error the package may need Developer Mode enabled, or its trust certificate installed." -ForegroundColor Yellow
+}
+`;
+}
+
+// Absolute URL of the `?format=json` data endpoint the bootstrap calls back
+// to — same path/query as the incoming request, plus `format=json`.
+function buildPsiDataUrl(url: URL): string {
+  const params = new URLSearchParams(url.search);
+  params.set("format", "json");
+  return `${url.origin}${url.pathname}?${params.toString()}`;
+}
+
+async function handlePsi(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const id = parsePsiPath(url.pathname);
+  // `?format=json` returns the resolved package data (consumed by the
+  // bootstrap script); anything else returns the bootstrap script itself.
+  const wantData = (url.searchParams.get("format") ?? "").toLowerCase() === "json";
+
+  if (!id) {
+    const msg = "No product id in the URL. Use /psi/<id>.";
+    return wantData ? json({ ok: false, error: msg }) : psiResponse(psiErrorScript(msg));
+  }
+  if (isApiDisabled(env)) {
+    const msg = "This deployment's built-in resolver is disabled.";
+    return wantData ? json({ ok: false, error: msg }) : psiResponse(psiErrorScript(msg));
+  }
+
+  const q = parsePsiQuery(url);
+
+  // Script path: emit the bootstrap instantly (no resolve). It fetches the
+  // data endpoint at runtime, so the slow catalog/FE3 work happens *after*
+  // `irm` returns — letting the script print a "Querying..." status.
+  if (!wantData) {
+    return psiResponse(generatePsiScript(id, q, buildPsiDataUrl(url)));
+  }
+
+  // Data path: resolve and return JSON for the bootstrap to install from.
+  const idType = q.type ?? detectIdentifierType(id) ?? "ProductId";
+  const body: ResolveAllRequest = {
+    ProductInput: id,
+    IdentifierType: idType as ResolveAllRequest["IdentifierType"],
+    Market: q.market,
+    LanguageTag: q.lang,
+  };
+
+  let result: ResolveAllResponse;
+  try {
+    const ac = new AbortController();
+    request.signal?.addEventListener("abort", () => ac.abort(), { once: true });
+    result = (await resolveProduct(id, body, ac.signal)).result;
+  } catch (e) {
+    return json({ ok: false, error: `Resolve failed: ${String(e)}` });
+  }
+
+  if (result.ErrorCodes?.length) {
+    const msg = result.ErrorCodes.map((c) => renderApiCode(c)).join("; ");
+    return json({ ok: false, error: msg || "Product not found." });
+  }
+
+  const pkgs = [
+    ...buildPsiPackages(result.AppxPackages ?? [], "appx", q.match),
+    ...buildPsiPackages(result.NonAppxPackages ?? [], "installer", q.match),
+  ];
+  if (pkgs.length === 0) {
+    return json({ ok: false, error: `No installable packages were found for '${id}'.` });
+  }
+
+  const appName = result.AppInfo?.Name;
+  const name = appName && appName !== "Unknown Name" ? appName : id;
+  return json({
+    ok: true,
+    id,
+    name,
+    packages: pkgs.map((p) => ({
+      Name: p.name,
+      Url: p.url,
+      Arch: p.arch,
+      Version: p.version,
+      Size: p.size,
+      Sha256: p.sha256,
+      IsBundle: p.isBundle,
+      IsFramework: p.isFramework,
+      Kind: p.kind,
+    })),
+  });
+}
+
 const CORS_HEADERS: HeadersInit = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
@@ -1647,6 +2269,15 @@ export default {
         response = json({ ...asErrors([code("method.notAllowed")]), Code: 405 }, 405);
       } else {
         response = await handleDownload(request, env);
+      }
+    } else if (isPsiPermalink(url.pathname)) {
+      // `irm <host>/psi/<id> | iex` — returns a PowerShell install script.
+      // Errors are returned *as a script* (HTTP 200) so `irm` doesn't throw
+      // before `iex` can surface the message to the user.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response = psiResponse(psiErrorScript("Method not allowed. Use GET."));
+      } else {
+        response = await handlePsi(request, env);
       }
     } else {
       // Asset responses are same-origin and have immutable headers — return

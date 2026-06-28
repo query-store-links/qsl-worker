@@ -769,6 +769,7 @@ function Resolver({ styles, isDark, setIsDark, toasterId, push }: ResolverProps)
         open={showPermalink}
         onDismiss={() => setShowPermalink(false)}
         form={form}
+        workerVersion={backendMeta?.version ?? null}
         onCopy={onCopy}
       />
 

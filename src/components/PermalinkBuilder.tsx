@@ -36,7 +36,10 @@ import {
 } from "@fluentui/react-icons";
 import {
   DEFAULT_PERMALINK_OPTIONS,
+  MIN_PSI_WORKER_VERSION,
   buildPermalink,
+  buildPsiCommand,
+  supportsPsi,
   type PermalinkOptions,
   type PermalinkPathStyle,
   type SearchFormData,
@@ -48,6 +51,9 @@ interface PermalinkBuilderProps {
   open: boolean;
   onDismiss: () => void;
   form: SearchFormData;
+  /** Connected worker's version, used to gate the PowerShell-install section
+   *  (needs the `/psi/<id>` endpoint, worker ≥ 0.1.3). `null` = unknown. */
+  workerVersion?: string | null;
   /** Same-origin app base (e.g. `https://qsl.example.com`). Defaults to
    *  `window.location.origin` when omitted — pass an override for testing. */
   origin?: string;
@@ -149,6 +155,20 @@ const useStyles = makeStyles({
   },
   switchHint: { color: tokens.colorNeutralForeground3 },
 
+  // ── PowerShell install ────────────────────────────────────────────────
+  psiSection: {
+    display: "flex",
+    flexDirection: "column",
+    rowGap: "12px",
+  },
+  psiHead: { display: "flex", flexDirection: "column", rowGap: "2px" },
+  psiSwitches: {
+    display: "flex",
+    flexWrap: "wrap",
+    columnGap: "20px",
+    rowGap: "8px",
+  },
+
   // ── Advanced ──────────────────────────────────────────────────────────
   advancedItem: {
     border: `1px solid ${tokens.colorNeutralStroke2}`,
@@ -214,9 +234,17 @@ function tryCompileRegex(s: string): RegExp | null | false {
 
 const STORAGE_KEY = "qsl_permalink_opts";
 
-export function PermalinkBuilder({ open, onDismiss, form, origin, onCopy }: PermalinkBuilderProps) {
+export function PermalinkBuilder({
+  open,
+  onDismiss,
+  form,
+  workerVersion,
+  origin,
+  onCopy,
+}: PermalinkBuilderProps) {
   const styles = useStyles();
   const t = useT();
+  const psiSupported = supportsPsi(workerVersion);
 
   // Persist the builder's knobs across sessions so the user's preferred
   // path style / arch / proxy mode survives reloads. Defaults come from
@@ -245,6 +273,11 @@ export function PermalinkBuilder({ open, onDismiss, form, origin, onCopy }: Perm
     [computedOrigin, form.productInput, form.identifierType, opts],
   );
 
+  const psiCmd = useMemo(
+    () => buildPsiCommand(computedOrigin, form.productInput, form.identifierType, opts),
+    [computedOrigin, form.productInput, form.identifierType, opts],
+  );
+
   const regexCheck = useMemo(() => tryCompileRegex(opts.match), [opts.match]);
   const regexInvalid = regexCheck === false;
 
@@ -256,6 +289,11 @@ export function PermalinkBuilder({ open, onDismiss, form, origin, onCopy }: Perm
     } catch {
       onCopy(url, t("permalink.toast.copied"));
     }
+  };
+
+  const copyPsi = () => {
+    if (!psiCmd) return;
+    onCopy(psiCmd, t("permalink.psi.toast.copied"));
   };
 
   const openInTab = () => {
@@ -506,6 +544,84 @@ export function PermalinkBuilder({ open, onDismiss, form, origin, onCopy }: Perm
               </AccordionPanel>
             </AccordionItem>
           </Accordion>
+
+          <Divider />
+
+          {/* PowerShell install ───────────────────────────────────────── */}
+          <div className={styles.psiSection}>
+            <div className={styles.psiHead}>
+              <Body1Strong>{t("permalink.psi.title")}</Body1Strong>
+              <Caption1 className={styles.switchHint}>
+                {psiSupported
+                  ? t("permalink.psi.subtitle")
+                  : t("permalink.psi.unsupported", { version: MIN_PSI_WORKER_VERSION })}
+              </Caption1>
+            </div>
+
+            {psiSupported && (
+              <>
+                <div className={styles.urlCard}>
+                  {psiCmd ? (
+                    <Text className={mergeClasses("qsl-mono", styles.urlText)}>{psiCmd}</Text>
+                  ) : (
+                    <Body1 className={styles.urlEmpty}>{t("permalink.preview.empty")}</Body1>
+                  )}
+                </div>
+
+                <div className={styles.actionRow}>
+                  <Tooltip content={t("permalink.psi.action.copy")} relationship="label">
+                    <Button
+                      appearance="primary"
+                      icon={<CopyRegular />}
+                      onClick={copyPsi}
+                      disabled={!psiCmd}
+                    >
+                      {t("permalink.action.copy")}
+                    </Button>
+                  </Tooltip>
+                </div>
+
+                <Field
+                  label={t("permalink.psi.version")}
+                  hint={<Caption1>{t("permalink.psi.version.hint")}</Caption1>}
+                >
+                  <Input
+                    className={styles.fullWidthInput}
+                    value={opts.psiVersion ?? ""}
+                    onChange={(_, d) => set("psiVersion", d.value.trim())}
+                    placeholder={t("permalink.psi.version.latest")}
+                  />
+                </Field>
+
+                <div className={styles.switchRow}>
+                  <Switch
+                    checked={opts.psiDeps !== false}
+                    onChange={(_, d) => set("psiDeps", d.checked)}
+                    label={t("permalink.psi.deps")}
+                  />
+                  <Caption1 className={styles.switchHint}>{t("permalink.psi.deps.hint")}</Caption1>
+                </div>
+
+                <div className={styles.psiSwitches}>
+                  <Switch
+                    checked={!!opts.psiUi}
+                    onChange={(_, d) => set("psiUi", d.checked)}
+                    label={t("permalink.psi.ui")}
+                  />
+                  <Switch
+                    checked={!!opts.psiForce}
+                    onChange={(_, d) => set("psiForce", d.checked)}
+                    label={t("permalink.psi.force")}
+                  />
+                  <Switch
+                    checked={!!opts.psiLaunch}
+                    onChange={(_, d) => set("psiLaunch", d.checked)}
+                    label={t("permalink.psi.launch")}
+                  />
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </DrawerBody>
     </Drawer>

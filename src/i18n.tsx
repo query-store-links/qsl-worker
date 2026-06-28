@@ -179,6 +179,20 @@ const en: Dict = {
   "permalink.action.open": "Open in new tab",
   "permalink.action.reset": "Reset to defaults",
   "permalink.toast.copied": "Permalink copied",
+  "permalink.psi.title": "PowerShell install",
+  "permalink.psi.subtitle":
+    "Paste into PowerShell to download and install automatically. Shares the architecture, filename filter, and locale above.",
+  "permalink.psi.unsupported": "Requires a worker on version {version} or newer.",
+  "permalink.psi.action.copy": "Copy the install command",
+  "permalink.psi.toast.copied": "Install command copied",
+  "permalink.psi.version": "Version",
+  "permalink.psi.version.hint": "Specific version, or blank for the latest.",
+  "permalink.psi.version.latest": "latest",
+  "permalink.psi.deps": "Install dependencies",
+  "permalink.psi.deps.hint": "Pull in any framework packages the app requires.",
+  "permalink.psi.ui": "Interactive",
+  "permalink.psi.force": "Force reinstall",
+  "permalink.psi.launch": "Launch after install",
 
   // ResultsView
   "results.fileCount": "{count} file",
@@ -534,6 +548,20 @@ const zh: Dict = {
   "permalink.action.open": "新标签页打开",
   "permalink.action.reset": "重置为默认",
   "permalink.toast.copied": "永久链接已复制",
+  "permalink.psi.title": "PowerShell 安装",
+  "permalink.psi.subtitle":
+    "粘贴到 PowerShell 即可自动下载并安装。共用上方的架构、文件名筛选和区域设置。",
+  "permalink.psi.unsupported": "需要 {version} 或更高版本的 worker。",
+  "permalink.psi.action.copy": "复制安装命令",
+  "permalink.psi.toast.copied": "安装命令已复制",
+  "permalink.psi.version": "版本",
+  "permalink.psi.version.hint": "指定版本，留空则使用最新版。",
+  "permalink.psi.version.latest": "最新",
+  "permalink.psi.deps": "安装依赖项",
+  "permalink.psi.deps.hint": "拉取应用所需的框架包。",
+  "permalink.psi.ui": "交互式",
+  "permalink.psi.force": "强制重装",
+  "permalink.psi.launch": "安装后启动",
 
   // ResultsView
   "results.fileCount": "{count} 个文件",

@@ -385,6 +385,14 @@ export function supportsDownloadPermalink(workerVersion: string | null | undefin
   return versionAtLeast(workerVersion, MIN_DOWNLOAD_PERMALINK_WORKER_VERSION);
 }
 
+/** Worker package.json version that first added the `/psi/<id>` PowerShell
+ *  install endpoint (`irm <host>/psi/<id> | iex`). */
+export const MIN_PSI_WORKER_VERSION = "0.1.3";
+
+export function supportsPsi(workerVersion: string | null | undefined): boolean {
+  return versionAtLeast(workerVersion, MIN_PSI_WORKER_VERSION);
+}
+
 /** Path styles the worker accepts for the download permalink. */
 export type PermalinkPathStyle = "d" | "download" | "installerDownload";
 
@@ -406,6 +414,21 @@ export interface PermalinkOptions {
   overrideLocale: boolean;
   market: string;
   lang: string;
+  // ── PowerShell install (psi) extras ────────────────────────────────────
+  // The Direct-link dialog also emits an `irm <origin>/psi/<id> | iex`
+  // command. `arch` / `match` / `market` / `lang` above are shared with the
+  // download permalink; the fields below are psi-only. They're optional in
+  // older persisted state, so readers must tolerate `undefined`.
+  /** Pin a version, or "" for the latest. */
+  psiVersion: string;
+  /** Install framework dependencies (default true). */
+  psiDeps: boolean;
+  /** Interactive picker on the client. */
+  psiUi: boolean;
+  /** Reinstall even if the same/newer version is present. */
+  psiForce: boolean;
+  /** Launch the app after install. */
+  psiLaunch: boolean;
 }
 
 export const DEFAULT_PERMALINK_OPTIONS: PermalinkOptions = {
@@ -420,6 +443,11 @@ export const DEFAULT_PERMALINK_OPTIONS: PermalinkOptions = {
   overrideLocale: false,
   market: "US",
   lang: "en-US",
+  psiVersion: "",
+  psiDeps: true,
+  psiUi: false,
+  psiForce: false,
+  psiLaunch: false,
 };
 
 /** Build a download-permalink URL from the search id + builder options.
@@ -457,6 +485,38 @@ export function buildPermalink(
   // proxies, but `/` and other reserved chars don't appear in any
   // Microsoft Store identifier so a single encodeURIComponent is sufficient.
   return `${origin}${path}${encodeURIComponent(id)}${q ? `?${q}` : ""}`;
+}
+
+/** Build the `irm <origin>/psi/<id> | iex` PowerShell install command from the
+ *  same builder options. Shares `arch` / `match` / locale with the download
+ *  permalink and adds the psi-only knobs. Returns "" when `id` is empty.
+ *  Tolerates older persisted options where the `psi*` fields are absent. */
+export function buildPsiCommand(
+  origin: string,
+  id: string,
+  identifierType: IdentifierType,
+  opts: PermalinkOptions,
+): string {
+  if (!id) return "";
+  const sp = new URLSearchParams();
+  if (identifierType !== "ProductId") sp.set("type", identifierType);
+  if (opts.arch) sp.set("arch", opts.arch);
+  if (opts.psiVersion) sp.set("version", opts.psiVersion);
+  // deps defaults to true; only emit the param when explicitly turned off.
+  if (opts.psiDeps === false) sp.set("deps", "false");
+  if (opts.psiUi) sp.set("ui", "1");
+  if (opts.psiForce) sp.set("force", "1");
+  if (opts.psiLaunch) sp.set("launch", "1");
+  if (opts.match) sp.set("match", opts.match);
+  if (opts.overrideLocale) {
+    if (opts.market) sp.set("market", opts.market);
+    if (opts.lang) sp.set("lang", opts.lang);
+  }
+  const q = sp.toString();
+  const url = `${origin}/psi/${encodeURIComponent(id)}${q ? `?${q}` : ""}`;
+  // PowerShell treats `&` / `?` as operators, so a URL carrying a query string
+  // must be quoted; a bare URL is fine unquoted.
+  return `irm ${q ? `"${url}"` : url} | iex`;
 }
 
 export function detectIdentifierType(raw: string): IdentifierType | null {
