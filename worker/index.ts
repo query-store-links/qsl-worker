@@ -1570,7 +1570,7 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
 //   dir=<path>                            download target (default temp)
 //   force=1                               Add-AppxPackage -ForceApplicationShutdown
 //   launch=1 / run=1                      launch the app after install
-//   verify=0                              skip the SHA-256 check (default on)
+//   verify=0                              skip the SHA-1 check (default on)
 //   match=<regex>                         filter candidate filenames
 //   type=<IdentifierType>                 pin the identifier type (else detected)
 //   market=<US> / lang=<en-US>            locale overrides
@@ -1598,7 +1598,12 @@ interface PsiPkg {
   arch: string;
   version: string;
   size: number;
-  sha256: string;
+  // TEMP: verify against the FE3 `<File Digest>` (SHA-1) instead of the
+  // DCat-sourced SHA-256. The SHA-256 is joined from DisplayCatalog metadata
+  // by package name and can mismatch the bytes FE3 actually serves; the SHA-1
+  // is the digest of this exact file, so it always matches. Revisit once the
+  // SHA-256 join is made reliable.
+  sha1: string;
   isBundle: boolean;
   isFramework: boolean;
   kind: "appx" | "installer";
@@ -1693,7 +1698,7 @@ function buildPsiPackages(
       arch: archFromFileName(name),
       version: versionFromFileName(name),
       size: Math.round(sizeStringToBytes(it.FileSize ?? "")),
-      sha256: (it.Sha256 ?? "").toLowerCase(),
+      sha1: (it.Sha1 ?? "").toLowerCase(),
       isBundle: isBundleFileName(name),
       isFramework: kind === "appx" ? isFrameworkFileName(name) : false,
       kind,
@@ -1854,11 +1859,11 @@ function Save-Package($p, $dir) {
   }
   $sw.Stop()
   Write-Info ("  done: {0:n1} MB in {1:n1}s" -f ((Get-Item $dest).Length / 1MB), $sw.Elapsed.TotalSeconds)
-  if ($Cfg.Verify -and $p.Sha256) {
-    Write-Info "  verifying SHA-256 ..."
-    $h = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash
-    if ($h -ne $p.Sha256.ToUpper()) { throw "SHA-256 mismatch for $($p.Name)" }
-    Write-Info "  SHA-256 OK"
+  if ($Cfg.Verify -and $p.Sha1) {
+    Write-Info "  verifying SHA-1 ..."
+    $h = (Get-FileHash -Algorithm SHA1 -Path $dest).Hash
+    if ($h -ne $p.Sha1.ToUpper()) { throw "SHA-1 mismatch for $($p.Name)" }
+    Write-Info "  SHA-1 OK"
   }
   return $dest
 }
@@ -2162,7 +2167,7 @@ async function handlePsi(request: Request, env: Env): Promise<Response> {
       Arch: p.arch,
       Version: p.version,
       Size: p.size,
-      Sha256: p.sha256,
+      Sha1: p.sha1,
       IsBundle: p.isBundle,
       IsFramework: p.isFramework,
       Kind: p.kind,
