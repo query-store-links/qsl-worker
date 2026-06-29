@@ -118,6 +118,10 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     rowGap: "20px",
+    "@media (max-width: 600px)": {
+      padding: "18px 14px 48px",
+      rowGap: "16px",
+    },
   },
   hero: { marginBottom: "4px" },
   heroTitle: {
@@ -127,6 +131,7 @@ const useStyles = makeStyles({
     lineHeight: 1.15,
     marginTop: 0,
     marginBottom: 0,
+    "@media (max-width: 600px)": { fontSize: "25px" },
   },
   heroSub: {
     marginTop: "8px",
@@ -134,6 +139,7 @@ const useStyles = makeStyles({
     fontSize: "15px",
     maxWidth: "720px",
     display: "block",
+    "@media (max-width: 600px)": { fontSize: "13.5px", marginTop: "6px" },
   },
   heroGradient: {
     backgroundImage: `linear-gradient(90deg, ${tokens.colorBrandForeground1}, #8d4ad9)`,

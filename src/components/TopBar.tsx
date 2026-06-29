@@ -165,7 +165,8 @@ const useStyles = makeStyles({
     pointerEvents: "none",
   },
   historyWrap: { position: "relative" },
-  popover: { width: "380px" },
+  // Cap to the viewport so the popover never overflows a narrow phone.
+  popover: { width: "380px", maxWidth: "calc(100vw - 24px)", boxSizing: "border-box" },
   popoverInner: { display: "flex", flexDirection: "column", rowGap: "14px", padding: "4px" },
   popoverHeader: {
     display: "flex",

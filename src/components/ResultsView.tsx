@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   Badge,
   Body1Strong,
@@ -37,13 +37,16 @@ import {
 } from "@fluentui/react-components";
 import {
   ArrowDownloadRegular,
+  ChevronDownRegular,
   ChevronRightRegular,
+  ChevronUpRegular,
   CopyRegular,
   CubeTreeRegular,
   DismissRegular,
   DocumentRegular,
   FilterRegular,
   FingerprintRegular,
+  FolderRegular,
   OpenRegular,
   WindowConsoleRegular,
 } from "@fluentui/react-icons";
@@ -56,13 +59,70 @@ import {
   type NormalizedItem,
   type PackageType,
 } from "../shared";
+import { useMediaQuery } from "../hooks";
 import { useT, type TFn } from "../i18n";
+
+// Kick off a browser download for a resolved URL without leaving the page.
+function startDownload(url: string, name: string): void {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 type FilterKey = "all" | PackageType;
 type SortKey = "name" | "size" | "type" | "arch";
 
 type Shell = "powershell" | "cmd" | "bash";
 type HashAlgo = "sha256" | "sha1";
+
+interface ResultGroup {
+  identity: string;
+  items: NormalizedItem[];
+  totalBytes: number;
+}
+
+// `Name_Version_Arch_ResId_Pub.ext` → `Name` (the PFN identity base). All the
+// arch/version variants of one package share this, so it's the folder key.
+function packageIdentity(name: string): string {
+  const us = name.indexOf("_");
+  if (us > 0) return name.slice(0, us);
+  return name.replace(/\.[^.]+$/, "") || name;
+}
+
+// The bit that actually differs within an identity — version · arch, plus the
+// extension when it's a bundle / symbols / blockmap so those don't collapse
+// into an identical-looking sibling. Falls back to the full name when the
+// filename doesn't parse (rare).
+function variantLabel(item: NormalizedItem): string {
+  const ext = item.name.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? "";
+  const bits: string[] = [];
+  if (item.version) bits.push(item.version);
+  if (item.arch) bits.push(item.arch);
+  if (ext && /(bundle|sym|blockmap|cab|xml)$/.test(ext)) bits.push(ext);
+  return bits.length ? bits.join(" · ") : item.name;
+}
+
+// Group filtered items by identity, preserving the (already-sorted)
+// first-appearance order of each group.
+function groupByIdentity(items: NormalizedItem[]): ResultGroup[] {
+  const map = new Map<string, NormalizedItem[]>();
+  for (const it of items) {
+    const id = packageIdentity(it.name);
+    const arr = map.get(id);
+    if (arr) arr.push(it);
+    else map.set(id, [it]);
+  }
+  return [...map.entries()].map(([identity, groupItems]) => ({
+    identity,
+    items: groupItems,
+    totalBytes: groupItems.reduce((s, i) => s + i.sizeBytes, 0),
+  }));
+}
 
 function buildVerifyCommand(shell: Shell, algo: HashAlgo, file: string, hash: string): string {
   // Get-FileHash / certutil want the wire-style label (SHA256 / SHA1);
@@ -194,6 +254,7 @@ const useStyles = makeStyles({
     fontWeight: 600,
   },
   bulkRight: { display: "flex", flexWrap: "wrap", columnGap: "8px", rowGap: "4px" },
+  // Desktop only — phones render the flex `mList` instead.
   tableWrap: { overflowX: "auto" },
   // Sticky offset is relative to the nearest scroll container — `tableWrap`
   // becomes one because of `overflow-x: auto` (browsers promote the other
@@ -492,15 +553,17 @@ const useStyles = makeStyles({
     width: "90px",
     "@media (max-width: 600px)": { display: "none" },
   },
+  // Size moves into the inline meta on phones so the file name reclaims the
+  // column's width.
   colSize: {
     width: "110px",
-    "@media (max-width: 600px)": { width: "72px" },
+    "@media (max-width: 600px)": { display: "none" },
   },
   colActions: {
     width: "160px",
-    "@media (max-width: 600px)": { width: "92px" },
+    "@media (max-width: 600px)": { width: "84px" },
   },
-  // Inline Type + Arch shown under the file name when their dedicated
+  // Inline Type + Arch + Size shown under the file name when their dedicated
   // columns are hidden on mobile.
   mobileMeta: {
     display: "none",
@@ -510,12 +573,150 @@ const useStyles = makeStyles({
       alignItems: "center",
       columnGap: "8px",
       rowGap: "4px",
-      marginTop: "4px",
+      marginTop: "5px",
     },
   },
   mobileArchText: {
     fontSize: "11px",
     color: tokens.colorNeutralForeground3,
+    fontVariantNumeric: "tabular-nums",
+  },
+  mobileMetaSep: {
+    color: tokens.colorNeutralForeground4,
+    fontSize: "11px",
+  },
+  // ── Package folders ───────────────────────────────────────────────────
+  groupRow: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    "&:hover": { backgroundColor: tokens.colorNeutralBackground2Hover },
+  },
+  groupCell: { padding: 0 },
+  groupToggle: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: "8px",
+    width: "100%",
+    minWidth: 0,
+    border: "none",
+    background: "transparent",
+    padding: "9px 12px 9px 0",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    color: tokens.colorNeutralForeground1,
+    textAlign: "left",
+    // `groupName` inherits this colour (it sets none of its own), so the
+    // label brightens on hover while the icons keep their muted tones.
+    "&:hover": { color: tokens.colorBrandForeground1 },
+  },
+  groupIcon: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
+  groupName: {
+    fontSize: "13px",
+    fontWeight: 600,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  groupSize: {
+    marginLeft: "auto",
+    paddingLeft: "8px",
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground3,
+    fontVariantNumeric: "tabular-nums",
+    flexShrink: 0,
+  },
+  // Children of a folder are indented so the nesting reads at a glance.
+  nameIndent: {
+    paddingLeft: "22px",
+    "@media (max-width: 600px)": { paddingLeft: "12px" },
+  },
+  headRight: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: "8px",
+    "@media (max-width: 600px)": { flexBasis: "100%", flexWrap: "wrap" },
+  },
+  expandAllBtn: { flexShrink: 0, whiteSpace: "nowrap" },
+  // ── Mobile card list ──────────────────────────────────────────────────
+  mList: { display: "flex", flexDirection: "column" },
+  mCard: {
+    display: "flex",
+    alignItems: "flex-start",
+    columnGap: "10px",
+    padding: "10px 16px",
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  mCardSel: { backgroundColor: tokens.colorBrandBackground2 },
+  mCardIndent: { paddingLeft: "32px" },
+  mCardBody: {
+    flex: 1,
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    rowGap: "5px",
+    paddingTop: "3px",
+  },
+  mCardName: {
+    fontSize: "13px",
+    color: tokens.colorNeutralForeground1,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    display: "block",
+  },
+  mCardMeta: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    columnGap: "8px",
+    rowGap: "4px",
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground3,
+    fontVariantNumeric: "tabular-nums",
+  },
+  mCardActions: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: "2px",
+    flexShrink: 0,
+    paddingTop: "2px",
+  },
+  mFolder: {
+    display: "flex",
+    alignItems: "center",
+    columnGap: "8px",
+    padding: "8px 16px",
+    backgroundColor: tokens.colorNeutralBackground2,
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  mFolderToggle: {
+    flex: 1,
+    minWidth: 0,
+    display: "flex",
+    alignItems: "center",
+    columnGap: "8px",
+    border: "none",
+    background: "transparent",
+    padding: "4px 0",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    color: tokens.colorNeutralForeground1,
+  },
+  mFolderName: {
+    fontSize: "13px",
+    fontWeight: 600,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  },
+  mFolderSize: {
+    marginLeft: "auto",
+    paddingLeft: "8px",
+    fontSize: "12px",
+    color: tokens.colorNeutralForeground3,
+    fontVariantNumeric: "tabular-nums",
+    flexShrink: 0,
   },
   // ── Details dialog ────────────────────────────────────────────────────
   dialogSurface: {
@@ -633,18 +834,27 @@ export function ResultsView({
 }: ResultsViewProps) {
   const styles = useStyles();
   const t = useT();
+  // Below 600px the Fluent Table's column model can't lay the rows out
+  // sensibly, so we swap it for a flex card list. Matches the column-hiding
+  // breakpoint used in the styles.
+  const isMobile = useMediaQuery("(max-width: 600px)");
   const [filter, setFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<SortKey>("size");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // Identities of the package folders the user has opened. Default empty =
+  // every multi-variant package collapsed, so the list reads as a tidy set of
+  // folders rather than dozens of near-identical filenames.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  // Reset selection in-render when `results` identity changes
+  // Reset selection + folder state in-render when `results` identity changes
   // (https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes).
   const [prevResults, setPrevResults] = useState(results);
   if (prevResults !== results) {
     setPrevResults(results);
     setSelected(new Set());
+    setExpanded(new Set());
   }
 
   const filtered = useMemo(() => {
@@ -688,6 +898,38 @@ export function ResultsView({
   const allSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.url));
   const toggleAll = () =>
     setSelected(allSelected ? new Set() : new Set(filtered.map((r) => r.url)));
+
+  // Group the filtered rows by package identity. Single-variant identities
+  // render as plain rows (nothing to fold); multi-variant ones become folders.
+  const groups = useMemo(() => groupByIdentity(filtered), [filtered]);
+  const multiGroups = groups.filter((g) => g.items.length > 1);
+  const allExpanded = multiGroups.length > 0 && multiGroups.every((g) => expanded.has(g.identity));
+
+  const toggleOne = (url: string) =>
+    setSelected((p) => {
+      const n = new Set(p);
+      if (n.has(url)) n.delete(url);
+      else n.add(url);
+      return n;
+    });
+  const toggleGroup = (identity: string) =>
+    setExpanded((p) => {
+      const n = new Set(p);
+      if (n.has(identity)) n.delete(identity);
+      else n.add(identity);
+      return n;
+    });
+  const toggleAllGroups = () =>
+    setExpanded(allExpanded ? new Set() : new Set(multiGroups.map((g) => g.identity)));
+  const selectGroup = (items: NormalizedItem[], on: boolean) =>
+    setSelected((p) => {
+      const n = new Set(p);
+      for (const it of items) {
+        if (on) n.add(it.url);
+        else n.delete(it.url);
+      }
+      return n;
+    });
 
   const sortableProps = (col: SortKey) => ({
     sortable: true,
@@ -779,25 +1021,38 @@ export function ResultsView({
             </Tooltip>
           )}
         </div>
-        <div className={styles.filterInputWrap}>
-          <Input
-            size="small"
-            placeholder={t("results.filter.placeholder")}
-            value={search}
-            onChange={(_, d) => setSearch(d.value)}
-            contentBefore={<FilterRegular />}
-            contentAfter={
-              search ? (
-                <Button
-                  size="small"
-                  appearance="transparent"
-                  icon={<DismissRegular />}
-                  aria-label={t("search.identifier.clear")}
-                  onClick={() => setSearch("")}
-                />
-              ) : null
-            }
-          />
+        <div className={styles.headRight}>
+          {multiGroups.length > 0 && (
+            <Button
+              size="small"
+              appearance="subtle"
+              className={styles.expandAllBtn}
+              icon={allExpanded ? <ChevronUpRegular /> : <ChevronDownRegular />}
+              onClick={toggleAllGroups}
+            >
+              {allExpanded ? t("results.group.collapseAll") : t("results.group.expandAll")}
+            </Button>
+          )}
+          <div className={styles.filterInputWrap}>
+            <Input
+              size="small"
+              placeholder={t("results.filter.placeholder")}
+              value={search}
+              onChange={(_, d) => setSearch(d.value)}
+              contentBefore={<FilterRegular />}
+              contentAfter={
+                search ? (
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    icon={<DismissRegular />}
+                    aria-label={t("search.identifier.clear")}
+                    onClick={() => setSearch("")}
+                  />
+                ) : null
+              }
+            />
+          </div>
         </div>
       </div>
 
@@ -861,93 +1116,182 @@ export function ResultsView({
         </div>
       )}
 
-      <div className={styles.tableWrap}>
-        <Table size="small" aria-label={t("results.table.aria")}>
-          <TableHeader>
-            <TableRow>
-              <TableHeaderCell
-                className={mergeClasses(
-                  styles.ckShellLeft,
-                  styles.stickyHeaderCell,
-                  styles.colCheck,
-                )}
-              >
-                <Checkbox
-                  checked={allSelected}
-                  onChange={toggleAll}
-                  aria-label={t("results.table.selectAll")}
-                />
-              </TableHeaderCell>
-              <TableHeaderCell
-                {...sortableProps("name")}
-                className={mergeClasses(styles.stickyHeaderCell, styles.colName)}
-              >
-                {t("results.table.fileName")}
-              </TableHeaderCell>
-              <TableHeaderCell
-                {...sortableProps("type")}
-                className={mergeClasses(styles.stickyHeaderCell, styles.colType)}
-              >
-                {t("results.table.type")}
-              </TableHeaderCell>
-              <TableHeaderCell
-                {...sortableProps("arch")}
-                className={mergeClasses(styles.stickyHeaderCell, styles.colArch)}
-              >
-                {t("results.table.arch")}
-              </TableHeaderCell>
-              <TableHeaderCell
-                {...sortableProps("size")}
-                className={mergeClasses(styles.stickyHeaderCell, styles.colSize)}
-              >
-                <Text className={styles.numCell} block>
-                  {t("results.table.size")}
-                </Text>
-              </TableHeaderCell>
-              <TableHeaderCell
-                className={mergeClasses(
-                  styles.ckShellRight,
-                  styles.stickyHeaderCell,
-                  styles.colActions,
-                )}
-              >
-                <Text className={styles.actionsCell} block>
-                  {t("results.table.actions")}
-                </Text>
-              </TableHeaderCell>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.length === 0 ? (
+      {isMobile ? (
+        <div className={styles.mList}>
+          {filtered.length === 0 ? (
+            <Text className={styles.empty} block>
+              {t("results.empty")}
+            </Text>
+          ) : (
+            groups.map((group) => {
+              if (group.items.length === 1) {
+                const r = group.items[0];
+                return (
+                  <MobileCard
+                    key={r.url}
+                    item={r}
+                    selected={selected.has(r.url)}
+                    onToggle={() => toggleOne(r.url)}
+                    onCopy={onCopy}
+                    t={t}
+                  />
+                );
+              }
+              const isOpen = expanded.has(group.identity);
+              const allSel = group.items.every((i) => selected.has(i.url));
+              const someSel = !allSel && group.items.some((i) => selected.has(i.url));
+              return (
+                <Fragment key={group.identity}>
+                  <MobileFolderHeader
+                    identity={group.identity}
+                    count={group.items.length}
+                    totalBytes={group.totalBytes}
+                    isOpen={isOpen}
+                    checkState={allSel ? true : someSel ? "mixed" : false}
+                    onToggle={() => toggleGroup(group.identity)}
+                    onSelect={() => selectGroup(group.items, !allSel)}
+                    t={t}
+                  />
+                  {isOpen &&
+                    group.items.map((r) => (
+                      <MobileCard
+                        key={r.url}
+                        item={r}
+                        label={variantLabel(r)}
+                        indent
+                        selected={selected.has(r.url)}
+                        onToggle={() => toggleOne(r.url)}
+                        onCopy={onCopy}
+                        t={t}
+                      />
+                    ))}
+                </Fragment>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        <div className={styles.tableWrap}>
+          <Table size="small" aria-label={t("results.table.aria")}>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={6}>
-                  <Text className={styles.empty} block>
-                    {t("results.empty")}
+                <TableHeaderCell
+                  className={mergeClasses(
+                    styles.ckShellLeft,
+                    styles.stickyHeaderCell,
+                    styles.colCheck,
+                  )}
+                >
+                  <Checkbox
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    aria-label={t("results.table.selectAll")}
+                  />
+                </TableHeaderCell>
+                <TableHeaderCell
+                  {...sortableProps("name")}
+                  className={mergeClasses(styles.stickyHeaderCell, styles.colName)}
+                >
+                  {t("results.table.fileName")}
+                </TableHeaderCell>
+                <TableHeaderCell
+                  {...sortableProps("type")}
+                  className={mergeClasses(styles.stickyHeaderCell, styles.colType)}
+                >
+                  {t("results.table.type")}
+                </TableHeaderCell>
+                <TableHeaderCell
+                  {...sortableProps("arch")}
+                  className={mergeClasses(styles.stickyHeaderCell, styles.colArch)}
+                >
+                  {t("results.table.arch")}
+                </TableHeaderCell>
+                <TableHeaderCell
+                  {...sortableProps("size")}
+                  className={mergeClasses(styles.stickyHeaderCell, styles.colSize)}
+                >
+                  <Text className={styles.numCell} block>
+                    {t("results.table.size")}
                   </Text>
-                </TableCell>
+                </TableHeaderCell>
+                <TableHeaderCell
+                  className={mergeClasses(
+                    styles.ckShellRight,
+                    styles.stickyHeaderCell,
+                    styles.colActions,
+                  )}
+                >
+                  <Text className={styles.actionsCell} block>
+                    {t("results.table.actions")}
+                  </Text>
+                </TableHeaderCell>
               </TableRow>
-            ) : (
-              filtered.map((r) => (
-                <ResultRow
-                  key={r.url}
-                  item={r}
-                  selected={selected.has(r.url)}
-                  onToggle={() =>
-                    setSelected((p) => {
-                      const n = new Set(p);
-                      if (n.has(r.url)) n.delete(r.url);
-                      else n.add(r.url);
-                      return n;
-                    })
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <Text className={styles.empty} block>
+                      {t("results.empty")}
+                    </Text>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                groups.map((group) => {
+                  // Single-variant identity: a plain row with the full name —
+                  // there's nothing to deduplicate.
+                  if (group.items.length === 1) {
+                    const r = group.items[0];
+                    return (
+                      <ResultRow
+                        key={r.url}
+                        item={r}
+                        selected={selected.has(r.url)}
+                        onToggle={() => toggleOne(r.url)}
+                        onCopy={onCopy}
+                        t={t}
+                      />
+                    );
                   }
-                  onCopy={onCopy}
-                  t={t}
-                />
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+                  // Multi-variant identity: a collapsible folder whose children
+                  // show only the differing version · arch.
+                  const isOpen = expanded.has(group.identity);
+                  const allSel = group.items.every((i) => selected.has(i.url));
+                  const someSel = !allSel && group.items.some((i) => selected.has(i.url));
+                  return (
+                    <Fragment key={group.identity}>
+                      <GroupHeaderRow
+                        identity={group.identity}
+                        count={group.items.length}
+                        totalBytes={group.totalBytes}
+                        isOpen={isOpen}
+                        checkState={allSel ? true : someSel ? "mixed" : false}
+                        onToggle={() => toggleGroup(group.identity)}
+                        onSelect={() => selectGroup(group.items, !allSel)}
+                        styles={styles}
+                        t={t}
+                      />
+                      {isOpen &&
+                        group.items.map((r) => (
+                          <ResultRow
+                            key={r.url}
+                            item={r}
+                            label={variantLabel(r)}
+                            indent
+                            selected={selected.has(r.url)}
+                            onToggle={() => toggleOne(r.url)}
+                            onCopy={onCopy}
+                            t={t}
+                          />
+                        ))}
+                    </Fragment>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      )}
     </Card>
   );
 }
@@ -1119,18 +1463,195 @@ function DependencyTreeRow({
   );
 }
 
-function ResultRow({
+// Folder header for a package identity with multiple variants. Spans the row;
+// clicking toggles the children. The leading checkbox selects/deselects the
+// whole group.
+function GroupHeaderRow({
+  identity,
+  count,
+  totalBytes,
+  isOpen,
+  checkState,
+  onToggle,
+  onSelect,
+  styles,
+  t,
+}: {
+  identity: string;
+  count: number;
+  totalBytes: number;
+  isOpen: boolean;
+  checkState: boolean | "mixed";
+  onToggle: () => void;
+  onSelect: () => void;
+  styles: ReturnType<typeof useStyles>;
+  t: TFn;
+}) {
+  return (
+    <TableRow className={styles.groupRow}>
+      <TableCell className={mergeClasses(styles.ckShellLeft, styles.colCheck)}>
+        <Checkbox
+          checked={checkState}
+          onChange={onSelect}
+          aria-label={t("results.group.selectAll", { name: identity })}
+        />
+      </TableCell>
+      <TableCell colSpan={5} className={styles.groupCell}>
+        <button
+          type="button"
+          className={styles.groupToggle}
+          onClick={onToggle}
+          aria-expanded={isOpen}
+          title={identity}
+        >
+          <ChevronRightRegular
+            fontSize={14}
+            className={mergeClasses(styles.depsChevron, isOpen && styles.depsChevronOpen)}
+          />
+          <FolderRegular fontSize={16} className={styles.groupIcon} />
+          <span className={`qsl-mono ${styles.groupName}`}>{identity}</span>
+          <CounterBadge count={count} appearance="ghost" color="informative" size="small" />
+          <span className={styles.groupSize}>{formatBytes(totalBytes)}</span>
+        </button>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+// ── Mobile card list (replaces the table below 600px) ───────────────────
+
+function MobileFolderHeader({
+  identity,
+  count,
+  totalBytes,
+  isOpen,
+  checkState,
+  onToggle,
+  onSelect,
+  t,
+}: {
+  identity: string;
+  count: number;
+  totalBytes: number;
+  isOpen: boolean;
+  checkState: boolean | "mixed";
+  onToggle: () => void;
+  onSelect: () => void;
+  t: TFn;
+}) {
+  const styles = useStyles();
+  return (
+    <div className={styles.mFolder}>
+      <Checkbox
+        checked={checkState}
+        onChange={onSelect}
+        aria-label={t("results.group.selectAll", { name: identity })}
+      />
+      <button
+        type="button"
+        className={styles.mFolderToggle}
+        onClick={onToggle}
+        aria-expanded={isOpen}
+        title={identity}
+      >
+        <ChevronRightRegular
+          fontSize={14}
+          className={mergeClasses(styles.depsChevron, isOpen && styles.depsChevronOpen)}
+        />
+        <FolderRegular fontSize={16} className={styles.groupIcon} />
+        <span className={`qsl-mono ${styles.mFolderName}`}>{identity}</span>
+        <CounterBadge count={count} appearance="ghost" color="informative" size="small" />
+        <span className={styles.mFolderSize}>{formatBytes(totalBytes)}</span>
+      </button>
+    </div>
+  );
+}
+
+function MobileCard({
   item,
   selected,
   onToggle,
   onCopy,
   t,
+  label,
+  indent,
 }: {
   item: NormalizedItem;
   selected: boolean;
   onToggle: () => void;
   onCopy: (text: string, what: string) => void;
   t: TFn;
+  label?: string;
+  indent?: boolean;
+}) {
+  const styles = useStyles();
+  const badgeColor: "brand" | "warning" | "informative" =
+    item.type === "APPX" ? "brand" : item.type === "BlockMap" ? "informative" : "warning";
+  return (
+    <div
+      className={mergeClasses(
+        styles.mCard,
+        selected && styles.mCardSel,
+        indent && styles.mCardIndent,
+      )}
+    >
+      <Checkbox
+        checked={selected}
+        onChange={onToggle}
+        aria-label={t("results.table.selectOne", { name: item.name })}
+      />
+      <div className={styles.mCardBody}>
+        <Text className={`qsl-mono ${styles.mCardName}`} title={item.name}>
+          {label ?? item.name}
+        </Text>
+        <div className={styles.mCardMeta}>
+          <Badge appearance="tint" color={badgeColor} size="small">
+            {item.type}
+          </Badge>
+          <span className="qsl-mono">{item.arch ?? "—"}</span>
+          <span aria-hidden>·</span>
+          <span>{item.size}</span>
+        </div>
+      </div>
+      <div className={styles.mCardActions}>
+        <DetailsDialog
+          item={item}
+          onCopy={onCopy}
+          onDownload={() => startDownload(item.url, item.name)}
+          t={t}
+        />
+        <Tooltip content={t("results.row.download")} relationship="label">
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<ArrowDownloadRegular />}
+            aria-label={t("results.row.download")}
+            onClick={() => startDownload(item.url, item.name)}
+          />
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
+function ResultRow({
+  item,
+  selected,
+  onToggle,
+  onCopy,
+  t,
+  label,
+  indent,
+}: {
+  item: NormalizedItem;
+  selected: boolean;
+  onToggle: () => void;
+  onCopy: (text: string, what: string) => void;
+  t: TFn;
+  /** Compact display name shown instead of the full filename (folder child). */
+  label?: string;
+  /** Indent the name cell to show the row nests under a folder header. */
+  indent?: boolean;
 }) {
   const styles = useStyles();
   const badgeColor: "brand" | "warning" | "informative" =
@@ -1156,7 +1677,10 @@ function ResultRow({
           aria-label={t("results.table.selectOne", { name: item.name })}
         />
       </TableCell>
-      <TableCell className={styles.colName} style={{ minWidth: 0 }}>
+      <TableCell
+        className={mergeClasses(styles.colName, indent && styles.nameIndent)}
+        style={{ minWidth: 0 }}
+      >
         <TableCellLayout
           truncate
           media={
@@ -1165,13 +1689,17 @@ function ResultRow({
         >
           <div className={styles.nameStack}>
             <Text className={`qsl-mono ${styles.nameText}`} title={item.name}>
-              {item.name}
+              {label ?? item.name}
             </Text>
             <div className={styles.mobileMeta}>
               <Badge appearance="tint" color={badgeColor} size="small">
                 {item.type}
               </Badge>
               <Text className={`qsl-mono ${styles.mobileArchText}`}>{item.arch ?? "—"}</Text>
+              <span className={styles.mobileMetaSep} aria-hidden>
+                ·
+              </span>
+              <Text className={styles.mobileArchText}>{item.size}</Text>
             </div>
             {item.sha256 && (
               <HashChip

@@ -64,6 +64,7 @@ const useStyles = makeStyles({
   card: {
     padding: "24px",
     rowGap: "0",
+    "@media (max-width: 600px)": { padding: "16px" },
   },
   headerRow: {
     display: "flex",
@@ -200,7 +201,15 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralForeground4,
   },
   statusDotActive: { backgroundColor: tokens.colorBrandBackground },
-  buttonGroup: { display: "flex", columnGap: "8px" },
+  buttonGroup: {
+    display: "flex",
+    flexWrap: "wrap",
+    columnGap: "8px",
+    rowGap: "8px",
+    // Take the full row on phones (the status line wraps above it) and keep
+    // the actions right-aligned so the primary Resolve button stays reachable.
+    "@media (max-width: 600px)": { width: "100%", justifyContent: "flex-end" },
+  },
 });
 
 export function SearchCard({
