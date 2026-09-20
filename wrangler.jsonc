@@ -7,6 +7,12 @@
   "name": "qsl-worker",
   "main": "worker/index.ts",
   "compatibility_date": "2026-05-16",
+  "limits": {
+    // FE3 resolves each package with a separate upstream request, in addition
+    // to catalog/cookie/sync requests. Large products exceed the Free cap of 50.
+    // Requires Workers Paid; see README.md for Free-plan deployments.
+    "subrequests": 1000,
+  },
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",

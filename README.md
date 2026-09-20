@@ -26,6 +26,45 @@ and companion files.
 | `bun run cf-typegen` | Regenerate `worker-configuration.d.ts` from `wrangler.jsonc`  |
 | `bun run assets`     | Regenerate derived icons / OG image from sources in `public/` |
 
+## Worker subrequest budget
+
+The built-in resolver requires **Workers Paid** for large products. FE3 makes
+an upstream request for each package, plus catalog, cookie, and sync requests;
+redirects also count. Products such as Realtek Audio Control (`9P2B8MCSVPLN`)
+can exceed the Free plan's hard limit of 50 subrequests in one resolution.
+
+`wrangler.jsonc` explicitly sets `limits.subrequests` to **1,000** to leave
+room for those requests. This is a finite budget, not an unlimited resolver:
+products with enough packages or redirects can still reach it. On Workers
+Paid, adjust it to suit the workload and redeploy. See Cloudflare's
+[subrequest limits](https://developers.cloudflare.com/workers/platform/limits/#subrequests)
+and [Wrangler limits configuration](https://developers.cloudflare.com/workers/wrangler/configuration/#limits).
+
+Setting this value does **not** upgrade an account or bypass the Free limit.
+For a Free-plan frontend deployment, remove the `limits` block, set
+`vars.DISABLE_API` to `"true"`, and configure **Settings → API Backend** to use
+a separately hosted compatible resolver. Resolving large products entirely
+on Workers Free would require splitting the work across client requests.
+
+After deploying to Workers Paid, verify both JSON and streaming resolutions
+of `9P2B8MCSVPLN` via `POST /api/links/resolve-all` with:
+
+```json
+{
+  "ProductInput": "9P2B8MCSVPLN",
+  "IdentifierType": "ProductId",
+  "Market": "US",
+  "Locale": "en-US",
+  "Language": "en"
+}
+```
+
+Use `Accept: application/json` and `Accept: application/x-ndjson`, respectively.
+Confirm the final result has no `packages.fetchFailed` error and includes all
+resolved packages (the issue reported 51; Microsoft's catalog can change).
+Local development and deployment dry runs do not enforce the deployed
+subrequest limit, so they cannot establish that the account supports this budget.
+
 ## Site assets
 
 All public-facing images live in `public/` and are served as-is by the Worker.
