@@ -36,6 +36,7 @@ import type {
 } from "@query-store-links/storelib_rs/web/storelib_rs.js";
 import {
   detectIdentifierType,
+  extractProductInput,
   renderApiCode,
   type ApiCode,
   type AppInfo,
@@ -1284,8 +1285,8 @@ function parseDownloadPath(pathname: string): string | null {
 
 async function handleDownload(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const id = parseDownloadPath(url.pathname);
-  if (!id) {
+  const rawId = parseDownloadPath(url.pathname);
+  if (!rawId) {
     return json({ ...asErrors([code("route.notFound", { path: url.pathname })]), Code: 404 }, 404);
   }
 
@@ -1302,7 +1303,12 @@ async function handleDownload(request: Request, env: Env): Promise<Response> {
   // Detect identifier type if the caller didn't pin one. Detection is a
   // best-effort shape match; ambiguous inputs default to ProductId, which
   // matches the SPA's own behaviour.
-  const idType: string = query.type ?? detectIdentifierType(id) ?? "ProductId";
+  const idType = (query.type ??
+    detectIdentifierType(rawId) ??
+    "ProductId") as NonNullable<ResolveAllRequest["IdentifierType"]>;
+  // Older UI builds embedded the entire Store URL in the path. Normalize
+  // after decoding and type selection so those saved links keep working.
+  const id = extractProductInput(rawId, idType);
 
   const body: ResolveAllRequest = {
     ProductInput: id,
@@ -2034,12 +2040,12 @@ function buildPsiDataUrl(url: URL): string {
 
 async function handlePsi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const id = parsePsiPath(url.pathname);
+  const rawId = parsePsiPath(url.pathname);
   // `?format=json` returns the resolved package data (consumed by the
   // bootstrap script); anything else returns the bootstrap script itself.
   const wantData = (url.searchParams.get("format") ?? "").toLowerCase() === "json";
 
-  if (!id) {
+  if (!rawId) {
     const msg = "No product id in the URL. Use /psi/<id>.";
     return wantData ? json({ ok: false, error: msg }) : psiResponse(psiErrorScript(msg));
   }
@@ -2049,6 +2055,12 @@ async function handlePsi(request: Request, env: Env): Promise<Response> {
   }
 
   const q = parsePsiQuery(url);
+  const idType = (q.type ??
+    detectIdentifierType(rawId) ??
+    "ProductId") as NonNullable<ResolveAllRequest["IdentifierType"]>;
+  // Accept full Store URLs emitted by older versions for both the
+  // bootstrap script and its subsequent JSON request.
+  const id = extractProductInput(rawId, idType);
 
   // Script path: emit the bootstrap instantly (no resolve). It fetches the
   // data endpoint at runtime, so the slow catalog/FE3 work happens *after*
@@ -2058,7 +2070,6 @@ async function handlePsi(request: Request, env: Env): Promise<Response> {
   }
 
   // Data path: resolve and return JSON for the bootstrap to install from.
-  const idType = q.type ?? detectIdentifierType(id) ?? "ProductId";
   const body: ResolveAllRequest = {
     ProductInput: id,
     IdentifierType: idType as ResolveAllRequest["IdentifierType"],

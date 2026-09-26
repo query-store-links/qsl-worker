@@ -458,6 +458,7 @@ export function buildPermalink(
   identifierType: IdentifierType,
   opts: PermalinkOptions,
 ): string {
+  id = extractProductInput(id, identifierType);
   if (!id) return "";
   const path =
     opts.pathStyle === "d"
@@ -497,6 +498,7 @@ export function buildPsiCommand(
   identifierType: IdentifierType,
   opts: PermalinkOptions,
 ): string {
+  id = extractProductInput(id, identifierType);
   if (!id) return "";
   const sp = new URLSearchParams();
   if (identifierType !== "ProductId") sp.set("type", identifierType);
